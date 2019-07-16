@@ -7,7 +7,7 @@ mkdir results_5G_Apr08
  	do
  		for prio in 1
  		do
- 			cd ~/home/maria/gem5-gpu/gem5-gpu/configs/gpu_config
+ 			cd ${LOCAL_GEM5_PATH}/gem5-gpu/configs/gpu_config
  			cp gpgpusim.fermi.config.template."$type" gpgpusim.fermi.config.template
  			echo >> gpgpusim.fermi.config.template
  			echo "-edge_max_timer_events 4096" >> gpgpusim.fermi.config.template
@@ -15,7 +15,7 @@ mkdir results_5G_Apr08
  			echo "-edge_event_priority $prio" >> gpgpusim.fermi.config.template
  			echo "-edge_limit_concurrent_events 0" >> gpgpusim.fermi.config.template
  			echo "-edge_gen_requests_pattern_by_delay_and_limit 0" >> gpgpusim.fermi.config.template 			
- 			cd ~/home/maria/gem5-gpu/benchmarks/edge/memc_conv
+ 			cd ${LOCAL_GEM5_PATH}/benchmarks/edge/memc_conv
  			#run test
 			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task" run_5G_memc.pbs
 			sleep 5

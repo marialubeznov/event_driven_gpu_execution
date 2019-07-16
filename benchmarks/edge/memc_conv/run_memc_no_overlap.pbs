@@ -7,4 +7,4 @@
 #PBS -q batch
 #PBS -V
 
-../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c /home/maria/home/maria/gem5-gpu/benchmarks/edge/memc_conv/gem5_fusion_memc_conv -o "-t 5 -p ${RATE} -n 16 -g ${BG_TASK}" 
+../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c ${LOCAL_GEM5_PATH}/benchmarks/edge/memc_conv/gem5_fusion_memc_conv -o "-t 5 -p ${RATE} -n 16 -g ${BG_TASK}" 

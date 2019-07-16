@@ -7,4 +7,4 @@
 #PBS -q batch
 #PBS -V
 
-../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c /home/maria/home/maria/gem5-gpu/benchmarks/edge/ipv4_fwd/gem5_fusion_ip_forward_conv -o "-t 3 -p 1075 -n 1024 -g ${BG_TASK}"
+../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c ${LOCAL_GEM5_PATH}/benchmarks/edge/ipv4_fwd/gem5_fusion_ip_forward_conv -o "-t 3 -p 1075 -n 1024 -g ${BG_TASK}"

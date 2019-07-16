@@ -2,7 +2,7 @@
 echo "EVENT"
 for event in ipv4_fwd ipv6_fwd memc_conv des_encryption	
 do
-	cd ~/home/maria/gem5-gpu/benchmarks/edge/$event/
+	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
  	for type in draining 8sm_reserve preemption
  	do
  		for bg_task in "$1"
@@ -21,7 +21,7 @@ done
 echo "BACKGROUND TASK"
 for event in ipv4_fwd ipv6_fwd memc_conv des_encryption
 do	
-	cd ~/home/maria/gem5-gpu/benchmarks/edge/$event/
+	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
  	for type in draining 8sm_reserve preemption
  	do
  		for bg_task in "$1"
@@ -54,7 +54,7 @@ done
 echo "WAIT"
 for event in ipv4_fwd ipv6_fwd memc_conv des_encryption	
 do
-	cd ~/home/maria/gem5-gpu/benchmarks/edge/$event/
+	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
  	for type in draining preemption
  	do
  		for bg_task in "$1"

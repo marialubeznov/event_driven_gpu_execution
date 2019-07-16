@@ -71,7 +71,7 @@ else
 	CC = gcc-4.4
 endif
 
-GPGPU_SIM_INC_DIR=/home/maria/maria_home/perforce/home/maria/gem5-gpu/gpgpu-sim/
+GPGPU_SIM_INC_DIR=${LOCAL_GEM5_PATH}/gpgpu-sim/
 
 NVCC_VERSION:=$(shell nvcc --version | awk '/release/ {print $$5;}' | sed 's/,//')
 INCFLAGEXTRA ?= -I$(GEM5_GPU_BENCHMARKS)/../gem5/util/m5 -I$(GEM5_GPU_BENCHMARKS)/libcuda -I$(GPGPU_SIM_INC_DIR)/ -I../../common/
@@ -87,9 +87,7 @@ OPT        ?= -O3
 ifeq ($(ARCH),ARM32)
 	LIB        ?= -lm5op_arm
 else
-	#LIB        ?= -L/usr/lib64 -lcutil_x86_64 -lm5op_x86
-	#LIB        ?= -L/lib64 -L/lib -L/usr/lib -L/usr/lib32/ -L/home/tayler/zlib/  -lcutil_x86_64 -lm5op_x86
-	LIB        ?= -L/lib64 -L/lib -L/usr/lib -L/home/tayler/zlib/  -lcutil_x86_64 -lm5op_x86
+	LIB        ?= -L/lib64 -L/lib -L/usr/lib  -lcutil_x86_64 -lm5op_x86
 endif
 SRCDIR     ?=
 ROOTDIR    ?=

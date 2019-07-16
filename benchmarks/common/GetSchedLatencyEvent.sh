@@ -3,7 +3,7 @@
 echo "WAIT"
 for event in "$2"	
 do
-	cd ~/home/maria/gem5-gpu/benchmarks/edge/$event/
+	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
  	for type in preemption
  	do
  		for bg_task in "$1"
@@ -31,7 +31,7 @@ done
 echo "INSTANT"
 for event in "$2"	
 do
-	cd ~/home/maria/gem5-gpu/benchmarks/edge/$event/
+	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
  	for type in preemption
  	do
  		for bg_task in "$1"
