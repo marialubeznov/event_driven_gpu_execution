@@ -1,0 +1,71 @@
+
+// THE FOLLOWING WERE DUE TO INITIAL COMPILATION ERRORS
+//   STEMMING FROM EITHER THE CODESET OR THE FILE EXTENSIONS
+//   (IE .cpp VS .c)
+Huntsville Macintosh Users Group. HMUG: man fopen (3). 
+  Last retrieved May 7, 2007 from http://www.hmug.org/man/3/fopen.php
+
+Huntsville Macintosh Users Group. HMUG: man open (2). 
+  Last retrieved May 7, 2007 from http://www.hmug.org/man/2/open.php
+
+die.net. open(2): open/possible create file/device. 
+  Last retrieved May 7, 2007 from http://www.die.net/doc/linux/man/man2/open.2.html
+
+Huntsville Macintosh Users Group. HMUG: man getopt (3). 
+  Last retrieved May 7, 2007 from http://www.hmug.org/man/3/getopt.php
+
+random() --> rand() from Phong's discussion with Professor 
+  Skadron regarding the compiling errors.
+
+Copied unistd.h from UNIX (SecureCRT) to Homedir to Barracuda.  
+  Searched for the file on the local hard drive and found it in the 
+  C:\Program Files\NVDIA...\CUDA...\ folder, so I figured it was 
+  downloaded there.  Thus, we did the same.
+
+National Center for Supercomputing Applications at the 
+  University of Illinois at Urbana-Champaign. Files Reference - 
+  unistd.h. Last retrieved May 7, 2007 from 
+  http://www.ncsa.uiuc.edu/UserInfo/Resources/Hardware/IBMp690/IBM/usr/
+    share/man/info/en_US/a_doc_lib/files/aixfiles/unistd.h.htm
+    
+// END
+
+NVIDIA Corporation. (2007, February 12). NVIDIA CUDA Complete 
+  Unified Device Architecture, Programming Guide (Version 0.8). 
+  Last retrieved May 8, 2007 from http://developer.download.nvidia.com/
+    compute/cuda/0_8/NVIDIA_CUDA_Programming_Guide_0.8.pdf
+
+C++ Resources Network (2007). Operators. Last retrieved 
+  May 8, 2007, from http://www.cplusplus.com/doc/tutorial/operators.html.
+  -- Sidarth checked order of operation (not really used, but examined)
+  
+Harris, M., PeterJK, yk_cadcg, et al.). (2007).  NVIDIA Forums ->
+  Having a little trouble with mutex/synchronisation. Last retrieved
+  May 10, 2007 from NVIDIA Forums:	http://forums.nvidia.com/index.php?
+    showtopic=28516&hl=mutual+exclusion
+  -- Considered, but ultimately we decided to eliminate the need for
+     mutual exclusion
+
+Professor Skadron, et al. (2007). CUDA Getting-Started Tips. 
+  Retrieved from CS433 Toolkit.
+
+NVIDIA Template sample code.  Retrieved from   http://developer.download.nvidia.com/compute/cuda/sdk/Projects/template.zip
+
+
+Another student asked whether we were using global vs. shared memory.
+  I told him I didn't think so (I think everything is global on the card),
+  but it made me reconsider the mutual exclusion through locking
+  for whatever reason.  Ultimately we had problems with the runtime
+  so we abandoned the idea and stuck with our other, less memory
+  intensive implementation.
+  
+// referenced in Assignment 6b as well (citation copied/pasted from README.txt with
+//   updated retrieval date [rechecked])
+Demeure, Arun. (2007, February 23). A quick programmer's look at NVIDIA'S 
+  CUDA [Blog comment]. Last retrieved May 10, 2007, from 
+  http://www.serpentine.com/blog/2007/02/22/a-quick-programmers-
+    look-at-nvidias-cuda/ .
+	
+  -- Commenter noted that 64-256 threads per block should be 
+	 used for optimal performance.  Also mentioned in NVIDIA 
+	 CUDA Programming Guide.

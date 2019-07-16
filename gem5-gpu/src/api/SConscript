@@ -1,0 +1,12 @@
+Import('*')
+
+if env['TARGET_ISA'] != 'no':
+    Source('gpu_syscall_helper.cc')
+    Source('cuda_syscalls.cc', Werror=False)
+    Source('ipv4.cpp', Werror=False)
+    Source('rte_lpm.cpp', Werror=False)
+    Source('ipv6.cpp', Werror=False)
+    Source('rte_lpm6.cpp', Werror=False)
+    Source('util.cpp', Werror=False)
+
+DebugFlag('GPUSyscalls')

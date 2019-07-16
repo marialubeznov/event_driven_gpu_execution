@@ -1,0 +1,14 @@
+##### CUDA 4.0 used for GPGPU-Sim
+CUDA_V=3.2
+export PATH=/home/tayler/nvcuda/$CUDA_V/cuda/bin/:$PATH
+export LD_LIBRARY_PATH=/home/tayler/nvcuda/$CUDA_V/cuda/lib64/:/home/tayler/nvcuda/$CUDA_V/cuda/lib/:/home/tayler/NVIDIA_GPU_Computing_SDK/C/lib/:$LD_LIBRARY_PATH
+
+##### GPGPU-Sim
+export CUDA_INSTALL_PATH=/home/tayler/nvcuda/$CUDA_V/cuda/
+export NVIDIA_COMPUTE_SDK_LOCATION=/home/tayler/NVIDIA_GPU_Computing_SDK/
+
+##### Gem5-gpu
+export CUDAHOME=/home/tayler/nvcuda/$CUDA_V/cuda/
+export NVIDIA_CUDA_SDK_LOCATION=/home/tayler/NVIDIA_GPU_Computing_SDK/C/
+
+export PATH=/home/tayler/bin/:$PATH

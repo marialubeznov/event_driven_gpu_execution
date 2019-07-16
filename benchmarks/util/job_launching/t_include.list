@@ -1,0 +1,8 @@
+gem5_fusion_bfs
+gem5_fusion_kmeans
+gem5_fusion_backprop
+gem5_fusion_heartwall
+gem5_fusion_hotspot
+gem5_fusion_lud
+gem5_fusion_srad
+gem5_fusion_streamcluster

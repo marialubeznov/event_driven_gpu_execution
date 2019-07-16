@@ -1,0 +1,10 @@
+#!/bin/sh
+#PBS -S /bin/bash
+#PBS -e err.out
+#PBS -o prio_"${PRIO}"_all_opt_"${TYPE}"_bg_task_"${BG_TASK}"_very_high_util.log
+#PBS -d .
+#PBS -l walltime=12:00:00,mem=1024mb
+#PBS -q batch
+#PBS -V
+
+../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c /home/maria/home/maria/gem5-gpu/benchmarks/edge/ipv6_fwd/gem5_fusion_ip_forward_conv -o "-t 3 -p 150 -n 64 -g ${BG_TASK}"

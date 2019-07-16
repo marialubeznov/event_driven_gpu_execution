@@ -1,0 +1,32 @@
+NO_INT: -edge_internal_int_mode 0
+
+NEWEST_FAST_INT_SHORT: -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 10 -edge_warp_selection newest
+NEWEST_FAST_INT_MED:   -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 100  -edge_warp_selection newest  
+NEWEST_FAST_INT_LONG:  -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 500 -edge_warp_selection newest
+NEWEST_MED_INT_SHORT:  -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 10 -edge_warp_selection newest
+NEWEST_MED_INT_MED:    -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 100 -edge_warp_selection newest
+NEWEST_MED_INT_LONG:   -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 500 -edge_warp_selection newest
+NEWEST_SLOW_INT_SHORT: -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 10 -edge_warp_selection newest
+NEWEST_SLOW_INT_MED:   -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 100 -edge_warp_selection newest
+NEWEST_SLOW_INT_LONG:  -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 500 -edge_warp_selection newest
+
+OLDEST_FAST_INT_SHORT: -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 10 -edge_warp_selection oldest
+OLDEST_FAST_INT_MED:   -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 100  -edge_warp_selection oldest  
+OLDEST_FAST_INT_LONG:  -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 500 -edge_warp_selection oldest
+OLDEST_MED_INT_SHORT:  -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 10 -edge_warp_selection oldest
+OLDEST_MED_INT_MED:    -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 100 -edge_warp_selection oldest
+OLDEST_MED_INT_LONG:   -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 500 -edge_warp_selection oldest
+OLDEST_SLOW_INT_SHORT: -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 10 -edge_warp_selection oldest
+OLDEST_SLOW_INT_MED:   -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 100 -edge_warp_selection oldest
+OLDEST_SLOW_INT_LONG:  -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 500 -edge_warp_selection oldest
+
+DEDICATED_FAST_INT_SHORT: -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 10 -edge_warp_selection dedicated 
+DEDICATED_FAST_INT_MED:   -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 100  -edge_warp_selection dedicated   
+DEDICATED_FAST_INT_LONG:  -edge_internal_int_mode 1 -edge_internal_int_period 1500 -edge_internal_int_delay 500 -edge_warp_selection dedicated 
+DEDICATED_MED_INT_SHORT:  -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 10 -edge_warp_selection dedicated 
+DEDICATED_MED_INT_MED:    -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 100 -edge_warp_selection dedicated 
+DEDICATED_MED_INT_LONG:   -edge_internal_int_mode 1 -edge_internal_int_period 5000 -edge_internal_int_delay 500 -edge_warp_selection dedicated 
+DEDICATED_SLOW_INT_SHORT: -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 10 -edge_warp_selection dedicated 
+DEDICATED_SLOW_INT_MED:   -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 100 -edge_warp_selection dedicated 
+DEDICATED_SLOW_INT_LONG:  -edge_internal_int_mode 1 -edge_internal_int_period 10000 -edge_internal_int_delay 500 -edge_warp_selection dedicated 
+
