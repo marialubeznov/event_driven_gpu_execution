@@ -1,3 +1,5 @@
+export LOCAL_PATH=~/perforce/maria_aamodt-pc07_2632/home/maria/gem5-gpu
+
 ##### CUDA 4.0 used for GPGPU-Sim
 CUDA_V=3.2
 export PATH=/home/tayler/nvcuda/$CUDA_V/cuda/bin/:$PATH
@@ -11,4 +13,3 @@ export NVIDIA_COMPUTE_SDK_LOCATION=/home/tayler/NVIDIA_GPU_Computing_SDK/
 export CUDAHOME=/home/tayler/nvcuda/$CUDA_V/cuda/
 export NVIDIA_CUDA_SDK_LOCATION=/home/tayler/NVIDIA_GPU_Computing_SDK/C/
 
-export PATH=/home/tayler/bin/:$PATH
