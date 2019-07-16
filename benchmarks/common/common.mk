@@ -87,7 +87,7 @@ OPT        ?= -O3
 ifeq ($(ARCH),ARM32)
 	LIB        ?= -lm5op_arm
 else
-	LIB        ?= -L/lib64 -L/lib -L/usr/lib  -lcutil_x86_64 -lm5op_x86
+	LIB        ?= -L/lib64 -L/lib -L/usr/lib -L${ZLIB_PATH} -lcutil_x86_64 -lm5op_x86 
 endif
 SRCDIR     ?=
 ROOTDIR    ?=

@@ -1,18 +1,22 @@
 #!/bin/bash
 
-export LOCAL_GEM5_PATH=~/perforce/maria_aamodt-pc07_2632/home/maria/gem5-gpu
+export LOCAL_GEM5_PATH=~/event_driven_gpu_execution/
+export ZLIB_PATH=/home/tayler/zlib/
 
-##### CUDA 3.2 used for GPGPU-Sim
-export PATH=/home/devalshah/cuda-3.2/cuda/bin/:$PATH
-export LD_LIBRARY_PATH=/home/devalshah/cuda-3.2/cuda/lib64/:/home/devalshah/cuda-3.2/cuda/lib/:/home/devalshah/NVIDIA_GPU_Computing_SDK/C/lib/:$LD_LIBRARY_PATH
+##### CUDA 3.1 used for gem5-gpu
+CUDA_V=3.1
+
+export PATH=/home/common/nvcuda/$CUDA_V/cuda/bin/:$PATH
+export LD_LIBRARY_PATH=/home/common/nvcuda/$CUDA_V/cuda/lib64/:/home/common/nvcuda/$CUDA_V/cuda/lib/:$LD_LIBRARY_PATH
 
 ##### GPGPU-Sim
-export CUDA_INSTALL_PATH=/home/devalshah/cuda-3.2/cuda/
-export NVIDIA_COMPUTE_SDK_LOCATION=/home/devalshah/NVIDIA_GPU_Computing_SDK/
+export CUDA_INSTALL_PATH=/home/common/nvcuda/$CUDA_V/cuda/
+export NVIDIA_COMPUTE_SDK_LOCATION=/home/common/NVIDIA_GPU_Computing_SDK/$CUDA_V/
+export PATH=$CUDA_INSTALL_PATH/bin:$PATH
 
 ##### Gem5-gpu
-export CUDAHOME=/home/devalshah/cuda-3.2/cuda/
-export NVIDIA_CUDA_SDK_LOCATION=/home/devalshah/NVIDIA_GPU_Computing_SDK/C/
+export CUDAHOME=/home/common/nvcuda/$CUDA_V/cuda/
+export NVIDIA_CUDA_SDK_LOCATION=/home/common/NVIDIA_GPU_Computing_SDK/$CUDA_V/C/
 
 cd benchmarks/edge;
 ln -s ../common;

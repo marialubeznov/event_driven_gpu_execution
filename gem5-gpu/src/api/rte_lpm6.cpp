@@ -45,7 +45,7 @@
 #include "rte_lpm6.h"
 #include "fpp.h"
 
-
+#define UINT8_MAX (255)
 
 /**< Allocate size bytes in hugepages on this socket */
 void *lpm6_hrd_malloc_socket(int shm_key, int size, int socket_id)
