@@ -16,7 +16,7 @@
  			echo "-edge_gen_requests_pattern_by_delay_and_limit 0" >> gpgpusim.fermi.config.template 			
  			cd ${LOCAL_GEM5_PATH}/benchmarks/edge/ipv6_fwd
  			#run test
-			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task" run_ipv6_very_high_util.pbs
+			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task" run_ipv6_high_util.pbs
 			sleep 5
  			#move to results dir
  			#mv prio_"$prio"_all_opt_"$type"_bg_task_"$bg_task".log results_1G_Apr04
