@@ -1,7 +1,7 @@
 #!/bin/sh
 #PBS -S /bin/bash
 #PBS -e err.out
-#PBS -o prio_"${PRIO}"_all_opt_"${TYPE}"_bg_task_"${BG_TASK}"_high_util.log
+#PBS -o prio_"${PRIO}"_all_opt_"${TYPE}"_bg_task_"${BG_TASK}"_very_high_util.log
 #PBS -d .
 #PBS -l walltime=12:00:00,mem=1024mb
 #PBS -q batch
