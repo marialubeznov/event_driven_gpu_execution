@@ -92,30 +92,25 @@ shader_core_ctx::shader_core_ctx( class gpgpu_sim *gpu,
                                   const struct memory_config *mem_config,
                                   shader_core_stats *stats )
   : core_t( gpu, NULL, config->warp_size, config->n_thread_per_shader, config->_intMode ),
-    m_barriers( config->max_warps_per_shader, config->max_cta_per_core, this ),
+    m_barriers( config->max_warps_per_shader, config->max_cta_per_core ),
 //    : core_t( gpu, NULL, config->warp_size, 
 //             config->n_thread_per_shader+config->_nIntThreads, 
 //             config->_intMode ),
 //     m_barriers( config->max_warps_per_shader+config->_nIntWarps, 
 //                 config->max_cta_per_core+config->nIntCTAs ),
-     m_dynamic_warp_id(0), _edgeNumInts(0), 
-     _edgeNumFreeWarpInts(0), _edgeNumVictimWarpInts(0), _edgeNumNoFlushVictimWarpInts(0), _edgeNumExitWarpInts(0), 
-     _nReplayLoads(0), _nBadReplayLoads(0), _edgeMaxIntSchedStall(0), _edgeMinIntSchedStall((unsigned long long)-1),
+     m_dynamic_warp_id(0), _iWarpRunning(false), _intSignal(false), _edgeTotalIntSchedCycles(0), _edgeTotalIntRunCycles(0), _edgeNumInts(0), 
+     _edgeNumFreeWarpInts(0), _edgeNumVictimWarpInts(0), _edgeNumNoFlushVictimWarpInts(0), _edgeNumExitWarpInts(0), _edgeCurrentIntSchedStallCycles(0),
+     _edgeTotalIntSchedStall(0), _edgeMaxIntSchedStall(0), _edgeMinIntSchedStall((unsigned long long)-1), _nReplayLoads(0), _nBadReplayLoads(0), 
      _edgeNumEdgeBarriers(0), _edgeNumEdgeReleaseBarriers(0), _edgeSkippedBarriers(0), _edgeBarriersRestored(0)
 {
-   
-    // EDGE
-    _cta_ninsn.resize(config->max_cta_per_core, 0); //only for non event CTAs
-    _cta_ninsn_left.resize(config->max_cta_per_core, 0);
-    _cta_ncycles.resize(config->max_cta_per_core, 0);
-    _warpIntStatsVector.resize(config->max_warps_per_shader);
-    for (int i=0; i<config->_edgePreemptionEnginesPerShader; i++) {
-        _edgePreemptionEngines.push_back(new shader_preemption_engine(this, gpu, config, &m_warp));
-    }
+    _edgeIntState = IDLE;
+    //if (m_config->_edgeRunISR) { //commenting since causes seg fault for some reason
+    _edgeSaveState = new EdgeSaveState(this, config->warp_size);
+    
+    //}
 
-    _victimWarpFetchPriorityIds.clear();
-    _victimWarpIds.clear();
-    _edgeEventWarpIds.clear();
+    // EDGE
+    _warpIntStatsVector.resize(config->max_warps_per_shader);
 
     _warpOccupancyPerCycle = 0;
     _registerUtilizationPerCycle = 0;
@@ -136,9 +131,6 @@ shader_core_ctx::shader_core_ctx( class gpgpu_sim *gpu,
         _edgeCtas.push_back(m_config->max_cta_per_core-1-i);
     
     for (int i=0; i<m_config->max_cta_per_core; i++) 
-        _CTAKernelMap.push_back(NULL);
-
-    for (int i=0; i<32; i++) 
         _CTAKernelMap.push_back(NULL);
 
     
@@ -504,8 +496,8 @@ bool shader_core_ctx::AreThereFreeRegsOnShader(kernel_info_t* k) {
     bool result = ( (m_occupied_regs + used_regs) <= m_config->gpgpu_shader_registers );
     
     if (result) {
-        EDGE_DPRINT(EdgeDebug, "%lld: Event kernel preempted a warp on shader %d. Reg file has %d/%d registers available, so no need to save&restore the registers of the victim warp\n", 
-                    gpu_sim_cycle, m_sid, (m_config->gpgpu_shader_registers-m_occupied_regs+used_regs), 
+        EDGE_DPRINT(EdgeDebug, "%lld: Event kernel preempted a warp %d on shader %d. Reg file has %d/%d registers available, so no need to save&restore the registers of the victim warp\n", 
+                    gpu_sim_cycle, _edgeWid, m_sid, (m_config->gpgpu_shader_registers-m_occupied_regs+used_regs), 
                     m_config->gpgpu_shader_registers );  
         EDGE_DPRINT(EdgeDebug, "%lld:  Incrementing occupied regs on shader %d by %d \n", gpu_sim_cycle, m_sid, used_regs);
         m_occupied_regs += used_regs;
@@ -610,40 +602,8 @@ bool shader_core_ctx::edgeReserveEventResources(kernel_info_t* k, unsigned nCtas
 
 bool shader_core_ctx::isFreeIntWarpAvailable()
 {
-    unsigned hw_ctaid;
     return occupy_shader_resource_1block(*_iKernel, false, true);
 }
-
-unsigned shader_core_ctx::NumFreeIntWarpsAvailable(kernel_info_t* EventKernel) {
-    std::list<unsigned> startThreads;
-    bool res = true;
-    while (res) {
-        res = occupy_shader_resource_1block(*(EventKernel), false, false);
-        if (res) {
-            int ctaSize = EventKernel->threads_per_cta();
-            unsigned startThread = find_available_hwtid(ctaSize, false); 
-            unsigned endThread = startThread + m_config->warp_size;
-            for( unsigned i=startThread; i<endThread; ++i ) {
-                assert( !m_occupied_hwtid.test(i) );
-                m_occupied_hwtid.set(i);
-            } 
-            startThreads.push_back(startThread);
-        }
-    }
-    unsigned result = startThreads.size();
-    while (!startThreads.empty()) {
-        unsigned startThread = startThreads.front(); 
-        unsigned endThread = startThread + m_config->warp_size;
-        for( unsigned i=startThread; i<endThread; ++i ) {
-            m_occupied_hwtid.reset(i);
-        }          
-        startThreads.pop_front();
-    }
-    return result;
-}
-
-
-
 
 /**
  * Select a CTA and Warp to handle the interrupt. 
@@ -652,34 +612,15 @@ unsigned shader_core_ctx::NumFreeIntWarpsAvailable(kernel_info_t* EventKernel) {
  * or may re-use an existing context. 
  */
 bool 
-shader_core_ctx::selectIntCtaWarpCtx(int& ctaId, int& warpId, kernel_info_t* EventKernel, bool interrupt, bool occupy, bool launchKernel)
+shader_core_ctx::selectIntCtaWarpCtx(int& ctaId, int& warpId, kernel_info_t* EventKernel, bool interrupt, bool occupy)
 {
     assert( EventKernel );
     assert( EventKernel->threads_per_cta() == m_config->warp_size );
 
-    
-
-    unsigned minPendingLoads = (unsigned)-1;
-
-    // EDGE NEW FIXME: We always have a valid free CTA context to use. We may just steal a warp/thread
-    // context from another CTA. TODO: Can't have barrier_set with this. Needs to be -1 and have max_cta_per_core be +1
-    if (occupy) {
-        assert(!_edgeCtas.empty());
-        ctaId = _edgeCtas.front(); //m_config->max_cta_per_core-1; // Always use the last CTA 
-        _edgeCtas.pop_front();
-        //printf("MARIA DEBUG occupying cta %d on sm %d _edgeCtas.size()=%d \n", ctaId, m_sid, _edgeCtas.size());
-    } else {
-        ctaId = _edgePreemptionEngines[0]->GetCid();
-    }
-
-    bool isFree = selectVictimWarp(warpId, EventKernel, interrupt, launchKernel);
-    assert(warpId!=-1);
-    return isFree;
-}
-
-bool shader_core_ctx::selectVictimWarp(int& warpId, kernel_info_t* EventKernel, bool interrupt, bool launchKernel) {
-    std::string edgeWarpConfig = m_config->_edgeWarpSelectionStr;
+    bool isFree = false;                         
     int ctaSize = EventKernel->threads_per_cta();
+
+    std::string edgeWarpConfig = m_config->_edgeWarpSelectionStr;
     const GPUIntWarpSelection warpSelection = edgeWarpConfig.find("pseudo_dedicated") != std::string::npos ?
                                                 EDGE_PSEUDO_DEDICATED :
                                                 edgeWarpConfig.find("dedicated") != std::string::npos ?
@@ -694,10 +635,23 @@ bool shader_core_ctx::selectVictimWarp(int& warpId, kernel_info_t* EventKernel, 
                                                 EDGE_NUM_WARP_SELECTION;
 
     assert ( warpSelection != EDGE_NUM_WARP_SELECTION );
-    bool isFree;
+
+    unsigned minPendingLoads = (unsigned)-1;
+    int warpIdx = -1;    
+
+    // EDGE NEW FIXME: We always have a valid free CTA context to use. We may just steal a warp/thread
+    // context from another CTA. TODO: Can't have barrier_set with this. Needs to be -1 and have max_cta_per_core be +1
+    if (occupy) {
+        assert(!_edgeCtas.empty());
+        ctaId = _edgeCtas.front(); //m_config->max_cta_per_core-1; // Always use the last CTA 
+        _edgeCtas.pop_front();
+        //printf("MARIA DEBUG occupying cta %d on sm %d _edgeCtas.size()=%d \n", ctaId, m_sid, _edgeCtas.size());
+    };
+
     if( warpSelection == EDGE_DEDICATED ) {
         // Dedicated hardware for the interrupt CTA/warp. Just return these indices. No need to save context. 
         isFree = true;
+        //ctaId = m_config->max_cta_per_core-1;         // Set the interrupt CTA to the last CTA
         warpId = m_config->max_warps_per_shader-1;    // Set the interrupt warp to the last warp
 
     } else if( warpSelection == EDGE_PSEUDO_DEDICATED ) {
@@ -713,8 +667,11 @@ bool shader_core_ctx::selectVictimWarp(int& warpId, kernel_info_t* EventKernel, 
         // EDGE FIXME: No longer attempting to use an existing CTA context. Use a dedicated
         // CTA context for the interrupt. TODO: Verify hardware overheads.  
         // Get a CTA ID
+        //ctaId = findFreeCta();
 
         if( isFree ) { // There is a free CTA/Warp context available, use them!
+            assert( ctaId != (unsigned)-1 );
+
             // Get the warp ID
             unsigned startThread = find_available_hwtid(ctaSize, false); 
             assert( startThread != (unsigned)-1 );
@@ -722,7 +679,7 @@ bool shader_core_ctx::selectVictimWarp(int& warpId, kernel_info_t* EventKernel, 
                
         } else { // Need to re-use an existing context
 
-            shd_warp_t* victimWarp = ChooseVictimWarp(EventKernel, launchKernel);            
+            shd_warp_t* victimWarp = ChooseVictimWarp(EventKernel);            
             
             // Set the cta and warp IDs
             if( victimWarp == NULL) {
@@ -731,6 +688,8 @@ bool shader_core_ctx::selectVictimWarp(int& warpId, kernel_info_t* EventKernel, 
             } else {
                 assert( victimWarp );
                 warpId = victimWarp->get_warp_id();
+                // EDGE FIXME: Now using a dedicated CTA id
+                //ctaId = m_threadState[warpId*m_config->warp_size].m_cta_id;
             }
         }
     }
@@ -738,7 +697,7 @@ bool shader_core_ctx::selectVictimWarp(int& warpId, kernel_info_t* EventKernel, 
     return isFree;
 }
 
-shd_warp_t* shader_core_ctx::ChooseVictimWarp(kernel_info_t* EventKernel, bool launchKernel) {
+shd_warp_t* shader_core_ctx::ChooseVictimWarp(kernel_info_t* EventKernel) {
     std::string edgeWarpConfig = m_config->_edgeWarpSelectionStr;
     const GPUIntWarpSelection warpSelection = edgeWarpConfig.find("pseudo_dedicated") != std::string::npos ?
                                                 EDGE_PSEUDO_DEDICATED :
@@ -772,11 +731,11 @@ shd_warp_t* shader_core_ctx::ChooseVictimWarp(kernel_info_t* EventKernel, bool l
                     // Search from oldest to newest
                     //printf("CanInterruptWarp results for SM %d: ", m_sid);
                     for( WarpVector::iterator it = temp.begin(); it < temp.end(); ++it ) {                   
-                        if( canInterruptWarp(*it, EventKernel, launchKernel) == 0 ) {
+                        if( canInterruptWarp(*it, EventKernel) == 0 ) {
                             victimWarp = *it;
                             break;
-                        } else {
-                            //printf("%d ", canInterruptWarp(*it, EventKernel, launchKernel));
+                        //} else {
+                            //printf("%d ", canInterruptWarp(*it, EventKernel));
                         }
                     }
                     //printf("\n");
@@ -785,7 +744,7 @@ shd_warp_t* shader_core_ctx::ChooseVictimWarp(kernel_info_t* EventKernel, bool l
                 case EDGE_NEWEST:
                     // Search from newest to oldest
                     for( WarpVector::iterator it = temp.end()-1; it >= temp.begin(); --it ) {
-                        if( canInterruptWarp(*it, EventKernel, launchKernel) == 0 ) {
+                        if( canInterruptWarp(*it, EventKernel) == 0 ) {
                             victimWarp = *it;
                             break;
                         }
@@ -800,7 +759,7 @@ shd_warp_t* shader_core_ctx::ChooseVictimWarp(kernel_info_t* EventKernel, bool l
                 case EDGE_BEST:
                     // Search for any warps which don't require a flush
                     for( WarpVector::iterator it = temp.begin(); it < temp.end(); ++it ) {
-                        if( canInterruptWarp(*it, EventKernel, launchKernel) == 0 ) {
+                        if( canInterruptWarp(*it, EventKernel) == 0 ) {
                             if( !warpNeedsFlush( (*it)->get_warp_id() ) ) {
                                 // Great! We now have a warp that doesn't require a flush
                                 victimWarp = *it;
@@ -834,109 +793,7 @@ shd_warp_t* shader_core_ctx::ChooseVictimWarp(kernel_info_t* EventKernel, bool l
             return victimWarp;
 }
 
-unsigned shader_core_ctx::NumVictimWarpsAvailable(kernel_info_t* EventKernel, bool launchKernel) {
-    return (VictimWarpsAvailable(EventKernel, launchKernel)).size();
-}
-
-std::vector<unsigned> shader_core_ctx::VictimWarpsAvailable(kernel_info_t* EventKernel, bool launchKernel) {
-    std::string edgeWarpConfig = m_config->_edgeWarpSelectionStr;
-    const GPUIntWarpSelection warpSelection = edgeWarpConfig.find("pseudo_dedicated") != std::string::npos ?
-                                                EDGE_PSEUDO_DEDICATED :
-                                                edgeWarpConfig.find("dedicated") != std::string::npos ?
-                                                EDGE_DEDICATED :
-                                                edgeWarpConfig.find("oldest") != std::string::npos ?
-                                                EDGE_OLDEST :
-                                                edgeWarpConfig.find("newest") != std::string::npos ?
-                                                EDGE_NEWEST :
-                                                edgeWarpConfig.find("best") != std::string::npos ?
-                                                EDGE_BEST :
-                                                
-                                                EDGE_NUM_WARP_SELECTION;
-
-    assert ( warpSelection != EDGE_NUM_WARP_SELECTION );
-    int warpIdx;
-    std::vector<unsigned> result;
-    unsigned minPendingLoads = (unsigned)-1;
-    // Get all supervised warps into a single vector
-            WarpVector temp;
-            for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
-                ((EdgeScheduler*)schedulers[i])->getSupervisedWarps(temp);
-            }           
-
-            // Sort based on oldest dynamic ID
-            std::sort( temp.begin(), temp.end(), scheduler_unit::sort_warps_by_oldest_dynamic_id );
-            
-            // Select a victim warp
-            shd_warp_t* victimWarp = NULL;
-            switch( warpSelection ) {
-                case EDGE_OLDEST:
-                    // Search from oldest to newest
-                    //printf("CanInterruptWarp results for SM %d: ", m_sid);
-                    for( WarpVector::iterator it = temp.begin(); it < temp.end(); ++it ) {                   
-                        if( canInterruptWarp(*it, EventKernel, launchKernel) == 0 ) {
-                            result.push_back((*it)->get_warp_id());
-                            //victimWarp = *it;
-                            //break;
-                        } else {
-                            //printf("%d ", canInterruptWarp(*it, EventKernel, launchKernel));
-                        }
-                    }
-                    //printf("\n");
-                    break;
-
-                case EDGE_NEWEST:
-                    // Search from newest to oldest
-                    for( WarpVector::iterator it = temp.end()-1; it >= temp.begin(); --it ) {
-                        if( canInterruptWarp(*it, EventKernel, launchKernel) == 0 ) {
-                            victimWarp = *it;
-                            break;
-                        }
-                    }
-
-                    break;
-                
-                case EDGE_RANDOM:
-                    EDGE_DPRINT(EdgeErr, "Interrupt warp selection not implemented: %d\n", warpSelection);
-                    break;
-
-                case EDGE_BEST:
-                    // Search for any warps which don't require a flush
-                    for( WarpVector::iterator it = temp.begin(); it < temp.end(); ++it ) {
-                        if( canInterruptWarp(*it, EventKernel, launchKernel) == 0 ) {
-                            if( !warpNeedsFlush( (*it)->get_warp_id() ) ) {
-                                // Great! We now have a warp that doesn't require a flush
-                                victimWarp = *it;
-                                _edgeNumNoFlushVictimWarpInts++;
-                                break;
-                            }
-
-                            // Otherwise, try and find the warp with the lowest number of pending loads
-                            if( warpPendingLoads( (*it)->get_warp_id() ) < minPendingLoads ) {
-                                warpIdx = (*it)->get_warp_id();
-                                minPendingLoads = warpPendingLoads( warpIdx );
-                            }
-
-                        }
-                    }
-
-                    // Sadly every warp requires a flush, so choose the ne with the lowest
-                    if( !victimWarp ) {
-                        assert( warpIdx != -1 );
-                        victimWarp = &m_warp[warpIdx];
-                    }
-
-                   break;
-            
-
-
-                default:
-                    EDGE_DPRINT(EdgeErr, "Undefined interrupt warp selection identifier: %d\n", warpSelection);
-                    abort();
-            }
-            return result;
-}
-
-int shader_core_ctx::canInterruptWarp(const shd_warp_t* victimWarp, kernel_info_t* EventKernel, bool launchKernel) const
+int shader_core_ctx::canInterruptWarp(const shd_warp_t* victimWarp, kernel_info_t* EventKernel) const
 {
     //victimWarp->print(stdout);
 
@@ -948,6 +805,7 @@ int shader_core_ctx::canInterruptWarp(const shd_warp_t* victimWarp, kernel_info_
     {
         return 1;
     }
+
 
     // Now, can we fit in this warp context
     const function_info* intFuncInfo = EventKernel->entry();
@@ -981,53 +839,11 @@ int shader_core_ctx::canInterruptWarp(const shd_warp_t* victimWarp, kernel_info_
             k->threads_per_cta(), k->get_cta_dim().x, k->get_cta_dim().y, k->get_cta_dim().z,
             32*((ki->regs+3)&~3) );
     */
-
-    if (victimWarp->isPaused() || isVictimWarp(victimWarp->get_warp_id() )) {
-        return 4;
-    }
-
-    //if not skipping barriers, don't choose warp that currently waiting on barrier
-    //or will be waiting = has barrier_op inst issued to pipe (not part of ibuffer anymore)
-    if (m_config->_edgePreemptionEnginesPerShader>1 && !m_config->_edgeSkipBarrier && 
-        ( victimWarp->HasPendingBarrierOps() || warp_waiting_at_barrier(victimWarp->get_warp_id()) )) {
-        return 5;
-    }
-    //
-    //if not flushing the ibuffer, can't choose a warp that has barrier instr in ibuffer/pipe or waiting on barrier
-    //since other instr won't be executed. If skipBarrier is enabled, last ibuffer inst can be barrier op
-    if (m_config->_edgePreemptionEnginesPerShader>1 && !m_config->_edgeFlushIBuffer && !victimWarp->ibuffer_empty() && 
-        ( victimWarp->HasBarrierOpInIbuffer(m_config->_edgeSkipBarrier)  || 
-          victimWarp->HasPendingBarrierOps() || warp_waiting_at_barrier(victimWarp->get_warp_id()) ) ) {
-        return 6;
-    }
-
-    //not the optimal "patch". when warp is preempted after fetch() was called but before decode actually filled the ibuffer
-    //we have an in-flight instr which is not yet in ibuffer, but will be there in a couple of cycles. If this instr is a barrier,
-    //we have a problem when multiple warps are preempted.  
-    if (m_config->_edgePreemptionEnginesPerShader>1 && !m_config->_edgeSkipBarrier && 
-        m_inst_fetch_buffer.m_valid && m_inst_fetch_buffer.m_warp_id == victimWarp->get_warp_id() ) {
-        return 7;
-    }
     
     return 0;
 }
 
-bool shd_warp_t::HasBarrierOpInIbuffer(bool edgeSkipBarrier) const {
-    unsigned buf_size = num_inst_in_ibuffer();
-    for(unsigned i=0; i<buf_size; i++) {
-        unsigned inst_ibuffer_idx = (m_next+i)%IBUFFER_SIZE;
-        if ( !m_ibuffer[inst_ibuffer_idx].m_valid ) 
-            continue;
-        if( m_ibuffer[inst_ibuffer_idx].m_inst->op == BARRIER_OP && 
-            !(edgeSkipBarrier && i==(buf_size-1)) ) { //last inst can be barrier is we can skip it
-            return true;
-        }
-    }
-    //if (num_inst_in_pipeline() > 0 && m_ibuffer[m_next+num_inst_in_pipeline()-1].m_valid) 
-    //    printf("MARIA DEBUG HasBarrierOpInIbuffer warp %d num_inst_in_pipeline()=%d last_op_in_ibuffer_is_barrier = %d \n",
-    //        m_warp_id, num_inst_in_pipeline(), m_ibuffer[m_next+num_inst_in_pipeline()-1].m_inst->op == BARRIER_OP );
-    return false;
-}
+
 
 // EDGE: Anything that should be initialized once and only once. Reset above can be called
 //       at the end of each iWarp execution.
@@ -1035,7 +851,15 @@ void
 shader_core_ctx::initEDGE(kernel_info_t* k)
 {
     if( m_config->_intMode ) {
+        _intSignal = false;
+        _iWarpRunning = false;
+        _edgeWid = -1;
+        _edgeCid = -1;
+        _edgeDoFlush = false;
+        _edgeIsFree = false;
+        _edgeDropLoads = false;
         
+        _iKernel = k;                                   // Save the kernel pointer for the interrupt kernel
         resetOccupiedResources();
 
         // Set the instruction cache address range
@@ -1057,7 +881,7 @@ shader_core_ctx::initEDGE(kernel_info_t* k)
 // that all of the state for these structures has been correctly saved and reset prior to 
 // calling this function
 void 
-shader_core_ctx::configureIntCtx(int cid, int wid, bool isFree, kernel_info_t* _iKernel)
+shader_core_ctx::configureIntCtx(int cid, int wid, bool isFree)
 {
     assert( m_config->_intMode );
     assert( _iKernel );
@@ -1121,23 +945,25 @@ shader_core_ctx::configureIntCtx(int cid, int wid, bool isFree, kernel_info_t* _
     schedulers[wid % m_config->gpgpu_num_sched_per_core]->ClearScoreboard(wid);
 }
 
-void shader_core_ctx::setIntSignal() //not used in the new mode
+void shader_core_ctx::setIntSignal() 
 {
-    // if( m_config->_intMode ) {
-    //     if( _edgeIntState == IDLE ) {
-    //         _edgeIntState = SELECT_WARP;
-    //         _intSigCount += 1;
-    //         if (!m_config->_edgeWarmupInt || _intSigCount > m_config->num_cluster()) {
-    //             printf("MARIA setIntSignal for core %d on cycle %lld \n", get_sid(), gpu_sim_cycle + gpu_tot_sim_cycle);
-    //             //_edgeInterruptAssertCycle.push_back(gpu_sim_cycle + gpu_tot_sim_cycle);
-    //         } else {
-    //             printf("MARIA setIntSignal for core %d on cycle %lld - warmup, ignoring \n", get_sid(), gpu_sim_cycle + gpu_tot_sim_cycle);
-    //         }
-    //     }
-    // } else {
-    //     EDGE_DPRINT(EdgeErr, "Trying to set interrupt when interrupt mode not enabled on core %d.\n", get_sid());
-    //     abort();
-    // }
+    if( m_config->_intMode ) {
+        if( _edgeIntState == IDLE ) {
+            assert( !_intSignal );
+            _intSignal = true;
+            _edgeIntState = SELECT_WARP;
+            _intSigCount += 1;
+            if (!m_config->_edgeWarmupInt || _intSigCount > m_config->num_cluster()) {
+                printf("MARIA setIntSignal for core %d on cycle %lld \n", get_sid(), gpu_sim_cycle + gpu_tot_sim_cycle);
+                //_edgeInterruptAssertCycle.push_back(gpu_sim_cycle + gpu_tot_sim_cycle);
+            } else {
+                printf("MARIA setIntSignal for core %d on cycle %lld - warmup, ignoring \n", get_sid(), gpu_sim_cycle + gpu_tot_sim_cycle);
+            }
+        }
+    } else {
+        EDGE_DPRINT(EdgeErr, "Trying to set interrupt when interrupt mode not enabled on core %d.\n", get_sid());
+        abort();
+    }
 }
 
 
@@ -1145,8 +971,9 @@ void shader_core_ctx::clearIntSignal()
 {
     if( m_config->_intMode ) {
         EDGE_DPRINT(EdgeDebug, "Clearing interrupt signal for shader <%d>\n", m_sid);    
-        //assert( _edgeIntState == IWARP_RUNNING );
-       // _edgeIntState = IWARP_COMPLETING;
+        assert( _intSignal );
+        assert( _edgeIntState == IWARP_RUNNING );
+        _edgeIntState = IWARP_COMPLETING;
     
     } else {
         EDGE_DPRINT(EdgeErr, "Trying to clear interrupt when interrupt mode not enabled..\n");
@@ -1275,37 +1102,37 @@ void shader_core_ctx::edgeResetIntState(unsigned CurrEdgeWid, unsigned CurrEdgeC
 }
 
 
-void shader_core_ctx::edgeSaveResetHwState(EdgeSaveState* _edgeSaveStateInput, unsigned wid, unsigned cid)
+void shader_core_ctx::edgeSaveResetHwState(EdgeSaveState* _edgeSaveStateInput)
 {
-    //assert( (_edgeWid != -1) && (_edgeCid != -1) && !_edgeIsFree );
+    assert( (_edgeWid != -1) && (_edgeCid != -1) && !_edgeIsFree );
 
-    int startThread = wid * m_config->warp_size;
+    int startThread = _edgeWid * m_config->warp_size;
 
     // Check if we're waiting at a barrier
     bool atBarrier = false;
     if( m_config->_edgeSkipBarrier ) 
-        atBarrier = m_barriers.edgeSetVictimBarrier( m_warp[wid].get_cta_id(), wid );
+        atBarrier = m_barriers.edgeSetVictimBarrier( m_warp[_edgeWid].get_cta_id(), _edgeWid );
 
-    if( _edgeSaveStateInput->saveState(wid, cid, m_cta_status[cid], &m_warp[wid],
-                m_simt_stack[wid], &m_thread[startThread], &m_threadState[startThread], 
-                m_active_threads, m_warp[wid].kernel, m_occupied_hwtid, 
-                m_barriers.warp_active(wid), atBarrier) ) {
-        EDGE_DPRINT(EdgeDebug, "Save state for CTA %d, Warp %d, successful\n", cid, wid);    
+    if( _edgeSaveStateInput->saveState(_edgeWid, _edgeCid, m_cta_status[_edgeCid], &m_warp[_edgeWid],
+                m_simt_stack[_edgeWid], &m_thread[startThread], &m_threadState[startThread], 
+                m_active_threads, m_warp[_edgeWid].kernel, m_occupied_hwtid, 
+                m_barriers.warp_active(_edgeWid), atBarrier) ) {
+        EDGE_DPRINT(EdgeDebug, "Save state for CTA %d, Warp %d, successful\n", _edgeCid, _edgeWid);    
 
         if( atBarrier )
             _edgeSkippedBarriers++;
 
-        m_simt_stack[wid] = new simt_stack(wid, m_config->warp_size);
+        m_simt_stack[_edgeWid] = new simt_stack(_edgeWid, m_config->warp_size);
        
         // Increment the interrupt counter for this warp
-        _warpIntStatsVector[wid].back()->_nInterrupts++;
+        _warpIntStatsVector[_edgeWid].back()->_nInterrupts++;
 
-        edgeResetIntState(wid, cid, false);
+        edgeResetIntState(_edgeWid, _edgeCid, false);
 
-        m_warp[wid].setIntWarp();
+        m_warp[_edgeWid].setIntWarp();
 
     } else {
-        EDGE_DPRINT(EdgeErr, "Save state for CTA %d, Warp %d, failed\n", cid, wid);    
+        EDGE_DPRINT(EdgeErr, "Save state for CTA %d, Warp %d, failed\n", _edgeCid, _edgeWid);    
     }
 
 }
@@ -1339,7 +1166,6 @@ void shader_core_ctx::edgeRestoreHwState(EdgeSaveState* _edgeSaveStateInput)
         }
         assert(_edgeSaveStateInput->kernel());
         m_warp[_edgeSaveStateInput->wid()].kernel = _edgeSaveStateInput->kernel();
-        _CTAKernelMap[_edgeSaveStateInput->cid()] = _edgeSaveStateInput->kernel();
     } else {
         EDGE_DPRINT(EdgeErr, "Restore state for CTA %d, Warp %d, failed\n", _edgeSaveStateInput->cid(), _edgeSaveStateInput->wid());    
     }
@@ -1386,36 +1212,12 @@ bool shader_core_ctx::delayIntWarp() const
     return m_gpu->delayIntWarp();
 }
 
-unsigned long long shader_core_ctx::getTotalIntSchedStalls() {
-    unsigned long long result = 0;
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        result += _edgePreemptionEngines[i]->getTotalIntSchedStalls();
-    }
-    return result;
-}
-
-unsigned long long shader_core_ctx::getTotalIntRunCycles() {
-    unsigned long long result = 0;
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        result += _edgePreemptionEngines[i]->getTotalIntSchedStalls();
-    }
-    return result;
-}
-
-unsigned long long shader_core_ctx::getTotalIntSchedCycles() {
-    unsigned long long result = 0;
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        result += _edgePreemptionEngines[i]->getTotalIntSchedCycles();
-    }
-    return result;
-}
-
 void shader_core_ctx::printStats(FILE* f)
 {
     fprintf(f, "=========================\n");
     fprintf(f, "Core %d: \n", m_sid);
 
-    fprintf(f, "\tAvg_int_warp_sched_stalls = %.4lf\n", (double)getTotalIntSchedStalls() / (double)_edgeNumVictimWarpInts);
+    fprintf(f, "\tAvg_int_warp_sched_stalls = %.4lf\n", (double)_edgeTotalIntSchedStall / (double)_edgeNumVictimWarpInts);
     fprintf(f, "\tMin_int_warp_sched_stalls = %lld\n", _edgeMinIntSchedStall);
     fprintf(f, "\tMax_int_warp_sched_stalls = %lld\n\n", _edgeMaxIntSchedStall);
 
@@ -1445,7 +1247,7 @@ void shader_core_ctx::printStats(FILE* f)
     fprintf(f, "=========================\n");
 }
 
-void shader_core_ctx::edgeOccupyShaderResourceIntWhenWarpIsFree(kernel_info_t* k, int _edgeWid)
+void shader_core_ctx::edgeOccupyShaderResourceIntWhenWarpIsFree(kernel_info_t* k)
 {
     // EDGE FIXME: Occupy a single CTA for this interrupt. Don't need to call 
     // occupy_shader_resource_1block(), since we already know at this point that 
@@ -1485,7 +1287,7 @@ void shader_core_ctx::edgeOccupyShaderResourceIntWhenWarpIsFree(kernel_info_t* k
     }
 }
 
-void shader_preemption_engine::edgeIntCycleReset()
+void shader_core_ctx::edgeIntCycleReset()
 {
     _edgeWid = -1;
     _edgeCid = -1;
@@ -1494,28 +1296,22 @@ void shader_preemption_engine::edgeIntCycleReset()
     _edgeDropLoads = false;
     _edgeIntWarpSelectCycle = 0;
     _edgeIntLaunchCycle = 0;
-    _edgeIntState = IDLE;
-    //m_shader->ClearVictimWarpPriorityIds();
 }
 
-void shader_core_ctx::edgeRecordIntStall(int wid)
+void shader_core_ctx::edgeRecordIntStall()
 {
     // Verify overlapping conditions
-    if( !m_warp[wid].ibuffer_empty() )     assert( m_warp[wid].inst_in_pipeline() );
-    if( edgeWarpPendingRegWrites(wid) )    assert( m_scoreboard->pendingWrites(wid) );
+    if( !m_warp[_edgeWid].ibuffer_empty() )     assert( m_warp[_edgeWid].inst_in_pipeline() );
+    if( edgeWarpPendingRegWrites(_edgeWid) )    assert( m_scoreboard->pendingWrites(_edgeWid) );
     
     // Record stall conditions
-    if( m_warp[wid].inst_in_pipeline() )   _edgeIntStallStats._instInPipeline++;
-    if( m_warp[wid].imiss_pending() )      _edgeIntStallStats._iMissPending++;
-    if( warp_waiting_at_barrier(wid) )     _edgeIntStallStats._atBarrier++;
-    if( warp_waiting_at_mem_barrier(wid) ) _edgeIntStallStats._atMemBarrier++;
-    if( m_warp[wid].get_n_atomic() > 0 )   _edgeIntStallStats._atomics++; 
-    if( m_scoreboard->pendingWrites(wid) ) _edgeIntStallStats._scoreboardRegPending++;
-    if( warpPendingLoads(wid) )            _edgeIntStallStats._pendingLoads++;
-
-    //EDGE_DPRINT(EdgeDebug, "%lld: Preemption on SM %d, warp %d. edgeRecordIntStall details: _instInPipeline: %d, _iMissPending: %d, _atBarrier:%d, _atMemBarrier:%d, _atomics: %d, _scoreboardRegPending: %d, _pendingLoads: %d \n", 
-    //            gpu_sim_cycle, m_sid, wid, m_warp[wid].inst_in_pipeline(), m_warp[wid].imiss_pending(), warp_waiting_at_barrier(wid), warp_waiting_at_mem_barrier(wid), 
-    //            m_warp[wid].get_n_atomic(), m_scoreboard->pendingWrites(wid), warpPendingLoads(wid));
+    if( m_warp[_edgeWid].inst_in_pipeline() )   _edgeIntStallStats._instInPipeline++;
+    if( m_warp[_edgeWid].imiss_pending() )      _edgeIntStallStats._iMissPending++;
+    if( warp_waiting_at_barrier(_edgeWid) )     _edgeIntStallStats._atBarrier++;
+    if( warp_waiting_at_mem_barrier(_edgeWid) ) _edgeIntStallStats._atMemBarrier++;
+    if( m_warp[_edgeWid].get_n_atomic() > 0 )   _edgeIntStallStats._atomics++; 
+    if( m_scoreboard->pendingWrites(_edgeWid) ) _edgeIntStallStats._scoreboardRegPending++;
+    if( warpPendingLoads(_edgeWid) )            _edgeIntStallStats._pendingLoads++;
 }
 
 unsigned shader_core_ctx::allWarpsPendingLoads() {
@@ -1579,82 +1375,92 @@ bool shd_warp_t::loadNextWb()
     return false;
 }
 
-void shader_preemption_engine::StartNewWarpPreemption(kernel_info_t* kernel, bool saveContext, bool launchKernel) {
-    setiKernel(kernel);
-    setEdgeState(SELECT_WARP);
+// void shader_core_ctx::NewEdgeSaveStateAndIssueBlock2Core() {
+//     //save state
+//     edgeSaveResetHwState(GetEdgeState(_iKernel->GetEdgeSaveStateId()));
+//     //launch kernel
+//     _iKernel->edge_set_int_start_cycle(edge_get_int_start_cycle_for_isr());
+//     m_occupied_n_threads -= m_config->warp_size;
+//     unsigned num = m_cluster->issue_block2core();
+//     assert(num);
+//     //m_last_cluster_issue=idx;
+//     //m_total_cta_launched += num;
+//     //done
+//     EDGE_DPRINT(EdgeDebug, "%lld: Event kernel can run, preemption done. Moving to IDLE\n", gpu_sim_cycle);
+//     StopPreemption();
+// }
 
-    _saveContext = saveContext;
-    _launchKernel = launchKernel;
+void shader_core_ctx::StopPreemption(bool restoreState, EdgeIntStates currState) {
+    if (restoreState) {
+        edgeRestoreHwState(GetEdgeState(_iKernel->GetEdgeSaveStateId()));
+    }
+    _iKernel->UnsetEdgeSaveStateValid();
+    _intSignal = false;
+    _iWarpRunning = false;
+    //for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
+    //    EdgeScheduler* es = (EdgeScheduler*)schedulers[i];    
+    //    es->clearIntSignal(); 
+    //}
+    edgeResetIntState(_edgeWid, _edgeCid, false); // Moving here
+    edgeIntCycleReset();
+    _iKernel->UnsetISRKernel();
+    _edgeIntState = IDLE;
+    EDGE_DPRINT(EdgeDebug, "%lld: While preempting a warp on Shader %d (state=%d), kernel has already been scheduled on another SM \n", gpu_sim_cycle, m_sid, currState);  
+}
+
+void shader_core_ctx::StartNewWarpPreemption(kernel_info_t* kernel) {
+    setiKernel(kernel);
+    setPrivateIntSignal();
+    setEdgeState(SELECT_WARP);
+    incIntSigCount();
+
     kernel->stats()._edgePreemptionQueueWait = gpu_sim_cycle - kernel->stats()._edgePreemptionQueueWait;
     kernel->stats()._edgePreemptionLen = gpu_sim_cycle;
     //printf("MARIA DEBUG assigning _edgePreemptionQueueWait to %lld and _edgePreemptionLen to %lld\n", 
     //    kernel->stats()._edgePreemptionQueueWait, kernel->stats()._edgePreemptionLen);
 }
 
-void shader_core_ctx::StartNewWarpPreemption(kernel_info_t* kernel) {
-    _edgeNumInts++;
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        if (i>0 && !m_config->_edgeLaunchMultiWarpEventKernel) {
-            _edgePreemptionEngines[i]->StartNewWarpPreemption(kernel, false, false);
-        } else {
-            _edgePreemptionEngines[i]->StartNewWarpPreemption(kernel, true, true);
-        }
-    }
-}
-
 void shader_core_ctx::ScheduleFastPathEvent(kernel_info_t* kernel) {
     kernel->stats()._edgePreemptionQueueWait = gpu_sim_cycle;
     //printf("MARIA DEBUG assigning _edgePreemptionQueueWait to %lld\n", 
     //    kernel->stats()._edgePreemptionQueueWait);
-    assert(!intInProgress());
-    StartNewWarpPreemption(kernel);
-}
-
-bool shader_core_ctx::intInProgress() {
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        if (_edgePreemptionEngines[i]->getEdgeState() != IDLE) {
-            return true;
-        }
+    if (_edgeIntState == IDLE) {
+        StartNewWarpPreemption(kernel);
+    } else { //queue
+        _eventKernelQueue.push_back(kernel); 
     }
-    return false;
 }
 
-void shader_preemption_engine::EnableRegSavingInKernel() {
-    if (m_shader->AreThereFreeRegsOnShader(_iKernel)) {
+void shader_core_ctx::EnableRegSavingInKernel() {
+    if (AreThereFreeRegsOnShader(_iKernel)) {
         return;
     }
     //replace the _ikernel with its version withot reg saving code. 
     //also replace in all related structs in gpgpusim (like m_running_kernels)    
     m_gpu->SwapRunningKernel(_iKernel, _iKernel->GetEdgeSwapEventKernel());
     EDGE_DPRINT(EdgeDebug, "%lld: Event kernel requires register backup %d on shader %d, replacing the kernel with its version w register save&restore (%d --> %d) \n", 
-                gpu_sim_cycle, _edgeWid, m_shader->get_sid(), _iKernel, _iKernel->GetEdgeSwapEventKernel());  
+                gpu_sim_cycle, _edgeWid, m_sid, _iKernel, _iKernel->GetEdgeSwapEventKernel());  
 
     _iKernel = _iKernel->GetEdgeSwapEventKernel();  
-    (*m_warp)[_edgeWid].kernel = _iKernel;     
+    m_warp[_edgeWid].kernel = _iKernel;     
 }
 
 void shader_core_ctx::edgeIntCycle()
 {
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        _edgePreemptionEngines[i]->edgeIntCycle();
-    }
-}
-
-void shader_preemption_engine::edgeIntCycle() {
     unsigned startThread,endThread;
     switch( _edgeIntState ) {
         case IDLE:
             // No interrupt, just return
             edgeIntCycleReset();
             _edgeCurrentIntSchedStallCycles = 0;
-            //if (!_eventKernelQueue.empty()) {
-            //    StartNewWarpPreemption(_eventKernelQueue.front());
-            //    _eventKernelQueue.erase(_eventKernelQueue.begin());
-            //}
+            if (!_eventKernelQueue.empty()) {
+                StartNewWarpPreemption(_eventKernelQueue.front());
+                _eventKernelQueue.erase(_eventKernelQueue.begin());
+            }
             break;
 
         case SELECT_WARP:
-            
+            EDGE_DPRINT(EdgeDebug, "%lld: Starting preemption on SM %d. EdgeState = SELECT_WARP \n", gpu_sim_cycle, m_sid);
             //EDGE_DPRINT(EdgeDebug, "%lld: Selecting an interrupt warp on Shader %d: ", gpu_sim_cycle, m_sid);    
             assert(!_iKernel->no_more_ctas_to_run());
             m_gpu->IncEventRunning();
@@ -1662,15 +1468,15 @@ void shader_preemption_engine::edgeIntCycle() {
                 _iKernel->SetISRKernel();
             }
 
-                    
-            // EDGE FIXME: This should reserve the context so no other warps can take it...
-            _edgeIsFree = m_shader->selectIntCtaWarpCtx(_edgeCid, _edgeWid, _iKernel, m_config->_edgeRunISR, _launchKernel, _launchKernel);
-            assert( !(*m_warp)[_edgeWid].isReserved() );
+            _edgeNumInts++;
 
-            if ( !_edgeIsFree ) {
-                m_shader->AddVictimWarp(_edgeWid);
-                m_shader->AddVictimWarpFetchPriorityId(_edgeWid);
-            }    
+            // Interrupt was just received, select a warp context to handle the interrupt
+            assert( _intSignal );
+            
+            // EDGE FIXME: This should reserve the context so no other warps can take it...
+            _edgeIsFree = selectIntCtaWarpCtx(_edgeCid, _edgeWid, _iKernel, m_config->_edgeRunISR, true);
+
+            assert( !m_warp[_edgeWid].isReserved() );
 
             _edgeIntWarpSelectCycle = gpu_sim_cycle; // Record the cycle when the int warp was selected
 
@@ -1682,25 +1488,27 @@ void shader_preemption_engine::edgeIntCycle() {
             if( !_edgeIsFree ) {
                 _edgeDoFlush = true;
                 _edgeIntState = FLUSH_PIPELINE;
-                m_shader->IncNumVictimWarpInts();
+                _edgeNumVictimWarpInts++;
 
                 // Signal to the warp scheduler's that they should prioritize the victim warp
                 if( m_config->_edgeVictimWarpHighPriority ) {
-                    m_shader->prioritizeVictimWarp(_edgeWid);
+                    for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
+                        ((EdgeScheduler*)schedulers[i])->prioritizeVictimWarp(_edgeWid);
+                    }
                 }
 
                 // Flush any pending intructions from the iBuffer
                 if( m_config->_edgeFlushIBuffer )
-                    (*m_warp)[_edgeWid].ibuffer_flush();
+                    m_warp[_edgeWid].ibuffer_flush();
 
 
                 // Replay loads
                 if( m_config->_edgeReplayLoads ) {
                     assert( m_config->_edgeFlushIBuffer ); // Need both
-                    if( (*m_warp)[_edgeWid].pendingLoads() ) {
+                    if( m_warp[_edgeWid].pendingLoads() ) {
                         _edgeDropLoads = true;
                     }
-                    //(*m_warp)[_edgeWid].dropLoads();
+                    //m_warp[_edgeWid].dropLoads();
                 }
 
 
@@ -1711,19 +1519,14 @@ void shader_preemption_engine::edgeIntCycle() {
                 // already held by the interrupted warp. 
             } else {
                 _edgeIntState = LAUNCH_IWARP;
-                m_shader->IncNNumIntFreeWarps();
+                _edgeNumFreeWarpInts++;
 
-                m_shader->edgeOccupyShaderResourceIntWhenWarpIsFree(_iKernel, _edgeWid);
-                (*m_warp)[_edgeWid].setIntWarp();
+                edgeOccupyShaderResourceIntWhenWarpIsFree(_iKernel);
+                m_warp[_edgeWid].setIntWarp();
             }
 
-            //EDGE_DPRINT(EdgeDebug, "(free? %s, cta_id: %d, warp_id: %d preempted pc: %d )\n", _edgeIsFree ? "yes" : "no", _edgeCid, _edgeWid, (*m_warp)[_edgeWid].get_pc());
+            //EDGE_DPRINT(EdgeDebug, "(free? %s, cta_id: %d, warp_id: %d preempted pc: %d )\n", _edgeIsFree ? "yes" : "no", _edgeCid, _edgeWid, m_warp[_edgeWid].get_pc());
 
-            EDGE_DPRINT(EdgeDebug, "%lld: Starting preemption on SM %d for event KernelId=%d. EdgeState = SELECT_WARP launchKernel=%d Warp: %d Free: %d ", 
-                        gpu_sim_cycle, m_shader->get_sid(), _iKernel->get_uid(), _launchKernel, _edgeWid, _edgeIsFree);
-            printf("inst_in_pipeline: %d imiss_pending: %d at_barrier: %d at_mem_barrier: %d pendingWrites: %d \n", 
-                    (*m_warp)[_edgeWid].num_inst_in_pipeline(), (*m_warp)[_edgeWid].imiss_pending(), m_shader->warp_waiting_at_barrier(_edgeWid), 
-                    m_shader->warp_waiting_at_mem_barrier(_edgeWid), m_shader->pendingWrites(_edgeWid));
             break;
 
         case FLUSH_PIPELINE:
@@ -1731,36 +1534,38 @@ void shader_preemption_engine::edgeIntCycle() {
             // Wait for all of the pending instructions to finish for the iWarp, if any, before interrupting
             assert( !_edgeIsFree && _edgeCid != -1 && _edgeWid != -1 );
 
-            //EDGE_DPRINT(EdgeDebug, "%lld: Preemption on SM %d, warp %d. EdgeState = FLUSH_PIPELINE. _edgeCurrentIntSchedStallCycles = %d inst_in_pipeline=%d \n", 
-            //    gpu_sim_cycle, m_shader->get_sid(), _edgeWid, _edgeCurrentIntSchedStallCycles, (*m_warp)[_edgeWid].inst_in_pipeline());
+            //EDGE_DPRINT(EdgeDebug, "%lld: Preemption on SM %d, warp %d. EdgeState = FLUSH_PIPELINE. _edgeCurrentIntSchedStallCycles = %d _edgeEventWarpIds size = %d \n", 
+                //gpu_sim_cycle, m_sid, _edgeWid, _edgeCurrentIntSchedStallCycles, _edgeEventWarpIds.size());
 
             // Record reason for the interrupt stall
-            m_shader->edgeRecordIntStall(_edgeWid);
+            edgeRecordIntStall();
 
             _edgeCurrentIntSchedStallCycles++;
 
             if( _edgeDropLoads == true ) {
-                if( (*m_warp)[_edgeWid].inst_in_pipeline() || (*m_warp)[_edgeWid].loadNextWb() ) {
+                if( m_warp[_edgeWid].inst_in_pipeline() || m_warp[_edgeWid].loadNextWb() ) {
                     _edgeIntState = FLUSH_PIPELINE;
                     break;
                 } else {
                     _edgeDropLoads = false;
-                    (*m_warp)[_edgeWid].dropLoads();
+                    m_warp[_edgeWid].dropLoads();
                 }
             }
 
-            if( !m_shader->warpNeedsFlush(_edgeWid) ) {
+            if( !warpNeedsFlush(_edgeWid) ) {
 
                 // Signal to the warp scheduler's that they should de-prioritize the victim warp
                 if( m_config->_edgeVictimWarpHighPriority ) {
-                    m_shader->restoreVictimWarp(_edgeWid);
+                    for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
+                        ((EdgeScheduler*)schedulers[i])->restoreVictimWarp(_edgeWid);
+                    }
                 }
                
                 // Interesting corner case where a warp is selected to interrupt, then completes its instructions while flushing, 
                 // which never gets to exit because we're stalling the warp from ever reaching the exit code. Basically, 
                 // a warp which needed to be interrupted no longer needs to be interrupted!
-                if( (*m_warp)[_edgeWid].done_exit() ) {
-                    m_shader->IncNumExitWarpInts(); 
+                if( m_warp[_edgeWid].done_exit() ) {
+                    _edgeNumExitWarpInts++;
                     
 
                     // EDGE FIXME NEW TEST: If we've happend to select a warp to interrupt, which exits while we're
@@ -1769,7 +1574,7 @@ void shader_preemption_engine::edgeIntCycle() {
                     // completely separate the warp from the CTA
                     #define EDGE_RETRY_INT_ON_EXIT
                     #ifdef EDGE_RETRY_INT_ON_EXIT
-                        EDGE_DPRINT(EdgeDebug, "%lld: Warp %d exited, retrying interrupt with a new warp selection on Shader %d: ", gpu_sim_cycle, _edgeWid, m_shader->get_sid());    
+                        EDGE_DPRINT(EdgeDebug, "%lld: Warp %d exited, retrying interrupt with a new warp selection on Shader %d: ", gpu_sim_cycle, _edgeWid, m_sid);    
                         edgeIntCycleReset();
                         _edgeIntState = SELECT_WARP;
                     #else
@@ -1777,18 +1582,18 @@ void shader_preemption_engine::edgeIntCycle() {
                         _edgeDoFlush = false;
 
                         // Remove this warp from it's previous CTA, if necessary
-                        m_barriers.removeWarpFromCta( _edgeWid, (*m_warp)[_edgeWid].get_cta_id() ); 
+                        m_barriers.removeWarpFromCta( _edgeWid, m_warp[_edgeWid].get_cta_id() ); 
 
                         // Now need to occupy the resources for the interrupt warp, since it's free 
                         // Moved from below. Need to occupy the resources. 
-                        m_shader->edgeOccupyShaderResourceIntWhenWarpIsFree(_iKernel, _edgeWid);
+                        edgeOccupyShaderResourceIntWhenWarpIsFree(_iKernel);
 
                         _edgeIntState = LAUNCH_IWARP;
                     #endif
 
                 } else {
                     //EDGE_DPRINT(EdgeDebug, "%lld: Flush is done for warp %d on SM %d. \n", gpu_sim_cycle, _edgeWid, m_sid);
-                    assert(!(*m_warp)[_edgeWid].inst_in_pipeline());
+                    assert(!m_warp[_edgeWid].inst_in_pipeline());
                     _edgeIntState = SAVE_HW_CTX;    // Once pipeline is flushed, save the hardware state for this warp
                 }
                 
@@ -1796,38 +1601,35 @@ void shader_preemption_engine::edgeIntCycle() {
                 // Stall cycle stats
                 _edgeTotalIntSchedStall += _edgeCurrentIntSchedStallCycles;
 
-                if( _edgeCurrentIntSchedStallCycles > m_shader->getMaxIntSchedStalls() ) 
-                    m_shader->setMaxIntSchedStalls(_edgeCurrentIntSchedStallCycles);
+                if( _edgeCurrentIntSchedStallCycles > _edgeMaxIntSchedStall ) 
+                    _edgeMaxIntSchedStall = _edgeCurrentIntSchedStallCycles;
 
-                if( _edgeCurrentIntSchedStallCycles < m_shader->getMinIntSchedStalls() )
-                    m_shader->setMinIntSchedStalls(_edgeCurrentIntSchedStallCycles);
+                if( _edgeCurrentIntSchedStallCycles < _edgeMinIntSchedStall )
+                    _edgeMinIntSchedStall = _edgeCurrentIntSchedStallCycles;
         
                 _edgeCurrentIntSchedStallCycles = 0;
 
             } else {
                 _edgeIntState = FLUSH_PIPELINE; // Otherwise, continue waiting until flush is complete
+            
                 // If we're at a barrier, record and release it
 //                if( m_config->_edgeSkipBarrier ) {
-//                    m_barriers.edgeSetVictimBarrier( (*m_warp)[_edgeWid].get_cta_id(), _edgeWid );
+//                    m_barriers.edgeSetVictimBarrier( m_warp[_edgeWid].get_cta_id(), _edgeWid );
 //                }
             }
 
             break;
 
         case SAVE_HW_CTX:
-            if (!_launchKernel) {
-                _edgeIntState = LAUNCH_IWARP;
-                break;
-            }
-            assert(!(*m_warp)[_edgeWid].inst_in_pipeline());
+            assert(!m_warp[_edgeWid].inst_in_pipeline());
             assert(!_iKernel->no_more_ctas_to_run());
             //EDGE_DPRINT(EdgeDebug, "%lld: Saving context of warp %d with pc=%d on Shader %d\n", 
-            //    gpu_sim_cycle, _edgeWid, (*m_warp)[_edgeWid].get_pc(), m_sid);
+            //    gpu_sim_cycle, _edgeWid, m_warp[_edgeWid].get_pc(), m_sid);
                 
             // HACK: FIXME: If in between the flushing cycle and this cycle the warp ends up completing (because the flush now allows
             // a warp to complete before testing the flush stall condition), just reselect a new warp
-            if( (*m_warp)[_edgeWid].done_exit() ) {
-                m_shader->IncNumExitWarpInts();
+            if( m_warp[_edgeWid].done_exit() ) {
+                _edgeNumExitWarpInts++;
                 edgeIntCycleReset();
                 _edgeIntState = SELECT_WARP;
             } else {
@@ -1835,13 +1637,13 @@ void shader_preemption_engine::edgeIntCycle() {
                 if (!m_config->_edgeRunISR) {
                     _iKernel->SetEdgeSaveStateValid();
                 }
-                EdgeSaveState* _edgeSaveState = new EdgeSaveState(m_shader, m_config->warp_size);
+                _edgeSaveState = new EdgeSaveState(this, m_config->warp_size);
                 _iKernel->SetEdgeSaveStateId(gpu_sim_cycle);
-                m_shader->AddNewEdgeState(_iKernel->GetEdgeSaveStateId(), _edgeSaveState);
+                AddNewEdgeState(_iKernel->GetEdgeSaveStateId(), _edgeSaveState);
                 if (m_config->_edgeRunISR) {
-                    m_shader->edgeSaveResetHwState(_edgeSaveState, _edgeWid, _edgeCid);
+                    edgeSaveResetHwState(_edgeSaveState);
                 } else {
-                    m_shader->edgeSaveResetHwState(m_shader->GetEdgeState(_iKernel->GetEdgeSaveStateId()), _edgeWid, _edgeCid);
+                    edgeSaveResetHwState(GetEdgeState(_iKernel->GetEdgeSaveStateId()));
                 }  
                 _edgeDoFlush = false;
                 _edgeIntState = LAUNCH_IWARP;
@@ -1849,38 +1651,7 @@ void shader_preemption_engine::edgeIntCycle() {
             break;
 
         case LAUNCH_IWARP:
-            if ( _launchKernel && !m_config->_edgeLaunchMultiWarpEventKernel && m_config->_edgeSyncPreemptionEngines ) { //need to wait for other warps preemptions to finish before launching the event warp
-                bool busy = false;
-                for (int i=1; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-                    if (m_shader->_edgePreemptionEngines[i]->getEdgeState() != IDLE) {
-                        busy = true;
-                    }
-                }
-                if (busy) {
-                    _edgeIntState = LAUNCH_IWARP;
-                    break;
-                }
-            }
-            if (!_edgeIsFree) {
-                m_shader->_victimWarpIds.erase( std::find( m_shader->_victimWarpIds.begin(), m_shader->_victimWarpIds.end(), _edgeWid ) );
-                if ( !m_shader->RemoveVisitedVictimWarpForFetch(_edgeWid) ) { //the wid is either in visited or in to be fetched
-                    m_shader->RemoveVictimWarpFetchPriorityId(_edgeWid); //if not viisited in fetch, remove from list
-                }
-            }
-            if (!_launchKernel) {
-                (*m_warp)[_edgeWid].SetPaused();
-                _iKernel->AddPreemptedAndPausedWarpId(_edgeWid);                
-                EDGE_DPRINT(EdgeDebug, "%lld: Finished preempting warp %d on SM %d for event KernelId=%d. Paused warp, not launching the actual kernel. Get back to IDLE\n", 
-                            gpu_sim_cycle, _edgeWid, m_shader->get_sid(), _iKernel->get_uid());    
-                edgeIntCycleReset(); 
-                _edgeIntState = IDLE;                
-                _iKernel = NULL; 
-                break;
-            }
-
-
-            m_shader->_edgeEventWarpIds.push_back(_edgeWid);
-
+            _edgeEventWarpIds.push_back(_edgeWid);
             assert(!_iKernel->no_more_ctas_to_run());
             
             // Record how long it took us to get from warp selection to warp launching (both free and victim warps). 
@@ -1889,58 +1660,70 @@ void shader_preemption_engine::edgeIntCycle() {
             _edgeIntLaunchCycle = gpu_sim_cycle;
 
             // Initialize the interrupt CTA and Warp context
-            m_shader->configureIntCtx(_edgeCid, _edgeWid, _edgeIsFree, _iKernel);
+            configureIntCtx(_edgeCid, _edgeWid, _edgeIsFree);
 
-	        startThread = _edgeWid*m_config->warp_size;
+	    startThread = _edgeWid*m_config->warp_size;
             endThread = startThread + m_config->_nIntThreads;
 
             if (m_config->_edgeDontLaunchEventKernel) {
-                m_shader->MarkEventKernelAsDoneHack(_edgeWid, _edgeWid+1, startThread, endThread);
-            }
+                for( unsigned i=startThread; i<endThread; ++i ) {
+                    m_thread[i]->set_done();
+                    m_thread[i]->registerExit();
+                    m_thread[i]->exitCore();
+
+                 }
+                for(int i=0;i<m_config->warp_size;i++)
+                {
+                    m_warp[_edgeWid].set_completed(i);
+                 }
+             }
 
 
-            shader_CTA_count_log(m_shader->get_sid(), 1);
-            m_shader->inc_n_active_cta();
-            m_shader->inc_occupied_ctas();
+            shader_CTA_count_log(m_sid, 1);
+            m_n_active_cta++;
+            m_occupied_ctas++;
                 
             // Interaction with GEM5 - Issue the CTA if it hasn't already been issued 
-            m_gpu->gem5CudaGPU->getCudaCore(m_shader->get_sid())->record_block_issue(_edgeCid);
+            m_gpu->gem5CudaGPU->getCudaCore(m_sid)->record_block_issue(_edgeCid);
 
             // EDGE FIXME: Used to reserve resources for the int warp here, a subsequent cycle from "SELECT_WARP".
             // There is a potential race condition here for a free interrupt warp context in which 
             // we select a warp, and then occupy it here. Moving this code up to the selection process.
             
             // Signal to the warp scheduler's that they should prioritize the iWarp
-            //if (m_config->_edgeRunISR) {
-            //    for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
-            //        ((EdgeScheduler*)schedulers[i])->setIntSignal();
-            //    }
-            //}
+            if (m_config->_edgeRunISR) {
+                for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
+                    ((EdgeScheduler*)schedulers[i])->setIntSignal();
+                }
+            }
 
             // CDP - Concurrent kernels on SM
             assert( !_iKernel->running() );
             _iKernel->inc_running();
+            _iWarpRunning = true;
             _iKernel->start();
 
             //long long int_start_cycle_isr = edge_get_int_start_cycle_for_isr();
             //printf("MARIA setting int start cycles of ISR kernel to %lld on core %d\n", int_start_cycle_isr, m_sid);
-            //if (!_iKernel->isEventKernel()) {
-            //    _iKernel->edge_set_int_start_cycle(m_shader->edge_get_int_start_cycle_for_isr());
-            //}
+            if (!_iKernel->isEventKernel()) {
+                _iKernel->edge_set_int_start_cycle(edge_get_int_start_cycle_for_isr());
+            }
             
             EDGE_DPRINT(EdgeDebug, "%lld: Interrupt warp on Shader %d occupied %d threads, %d shared mem, %d registers, %d ctas for kernel %s %p \n",
-                    gpu_sim_cycle, m_shader->get_sid(), m_shader->get_occupied_n_threads(), m_shader->get_occupied_shmem(), m_shader->get_occupied_regs(), m_shader->get_occupied_ctas(), _iKernel->entry()->get_name().c_str(), _iKernel);
+                    gpu_sim_cycle, m_sid, m_occupied_n_threads, m_occupied_shmem, m_occupied_regs, m_occupied_ctas, _iKernel->entry()->get_name().c_str(), _iKernel);
 
             if (m_config->_edgeRunISR) {
                 _edgeIntState = IWARP_RUNNING;
             } else { //done here!
                 _edgeTotalIntRunCycles += (gpu_sim_cycle - _edgeIntLaunchCycle);
+                _intSignal = false;
+                _iWarpRunning = false;
                 _iKernel->stats()._edgePreemptionLen = gpu_sim_cycle - _iKernel->stats()._edgePreemptionLen;
                 //printf("MARIA DEBUG assigning _edgePreemptionLen to %lld\n", _iKernel->stats()._edgePreemptionLen);
                 
                 //edgeResetIntState(_edgeWid, _edgeCid, false);     
                 EDGE_DPRINT(EdgeDebug, "%lld: Event kernel KernelId=%d has been launched on SM %d warp %d CTA %d, preemption done. Get back to IDLE\n", 
-                            gpu_sim_cycle, _iKernel->get_uid(), m_shader->get_sid(), _edgeWid, _edgeCid);    
+                            gpu_sim_cycle, _iKernel->get_uid(), m_sid, _edgeWid, _edgeCid);    
                 _iKernel = NULL;   
                 edgeIntCycleReset();                
                 _edgeIntState = IDLE;
@@ -1949,44 +1732,46 @@ void shader_preemption_engine::edgeIntCycle() {
             break;
 
         case IWARP_RUNNING:
-            //assert(m_config->_edgeRunISR);
+            assert(m_config->_edgeRunISR);
             // else - Nothing to do while iWarp running            
             break;
         
         case IWARP_COMPLETING:
-            // assert(m_config->_edgeRunISR);
-            // EDGE_DPRINT(EdgeDebug, "%lld: ISR Kernel finishing!!\n", gpu_sim_cycle);
+            assert(m_config->_edgeRunISR);
+            EDGE_DPRINT(EdgeDebug, "%lld: ISR Kernel finishing!!\n", gpu_sim_cycle);
 
-            // _edgeTotalIntRunCycles += (gpu_sim_cycle - _edgeIntLaunchCycle);
+            _edgeTotalIntRunCycles += (gpu_sim_cycle - _edgeIntLaunchCycle);
 
-            // for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
-            //     EdgeScheduler* es = (EdgeScheduler*)schedulers[i];    
-            //     es->clearIntSignal(); 
-            // }
+            _intSignal = false;
+            _iWarpRunning = false;
+            for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
+                EdgeScheduler* es = (EdgeScheduler*)schedulers[i];    
+                es->clearIntSignal(); 
+            }
 
-            // assert( !_iKernel->running() );
-            // _iKernel->resetKernel();
+            assert( !_iKernel->running() );
+            _iKernel->resetKernel();
             
 
-            // if( _edgeIsFree ) {
-            //     edgeResetIntState(_edgeWid, _edgeCid, true); // Moving here
-            //     edgeIntCycleReset();
-            //     _edgeIntState = IDLE;
-            // } else {
-            //     _edgeIntState = RESTORE_HW_CTX;
-            // }
+            if( _edgeIsFree ) {
+                edgeResetIntState(_edgeWid, _edgeCid, true); // Moving here
+                edgeIntCycleReset();
+                _edgeIntState = IDLE;
+            } else {
+                _edgeIntState = RESTORE_HW_CTX;
+            }
 
             break;
 
         case RESTORE_HW_CTX:
-            // assert(m_config->_edgeRunISR);
-            // // EDGE: Moving this here to avoid another race condition between cycles where something
-            // // is freed and then the interrupt warp/restore warp state is in some transient state. 
-            // m_shader->edgeResetIntState(_edgeWid, _edgeCid, true);
-            // m_shader->edgeRestoreHwState(_edgeSaveState);
-            // m_shader->edgeIntCycleReset();
-            // EDGE_DPRINT(EdgeDebug, "%lld: Restoring hw state and get back to IDLE\n", gpu_sim_cycle);
-            // _edgeIntState = IDLE;
+            assert(m_config->_edgeRunISR);
+            // EDGE: Moving this here to avoid another race condition between cycles where something
+            // is freed and then the interrupt warp/restore warp state is in some transient state. 
+            edgeResetIntState(_edgeWid, _edgeCid, true);
+            edgeRestoreHwState(_edgeSaveState);
+            edgeIntCycleReset();
+            EDGE_DPRINT(EdgeDebug, "%lld: Restoring hw state and get back to IDLE\n", gpu_sim_cycle);
+            _edgeIntState = IDLE;
             break;
 
         default: 
@@ -1997,19 +1782,6 @@ void shader_preemption_engine::edgeIntCycle() {
 
 }
 
-void shader_core_ctx::MarkEventKernelAsDoneHack(int StartWid, int EndWid, int startThread, int endThread) {
-    for( unsigned i=startThread; i<endThread; ++i ) {
-        m_thread[i]->set_done();
-        m_thread[i]->registerExit();
-        m_thread[i]->exitCore();
-    }
-    for(unsigned j=StartWid; j<EndWid; ++j) {
-        for(int i=0;i<m_config->warp_size;i++) {
-            m_warp[j].set_completed(i);
-        }
-    }
-}
-
 unsigned shader_core_ctx::TotalInstInPipeline() {
     unsigned result = 0;
     for( unsigned i=0; i < m_config->max_warps_per_shader; i++ ) {
@@ -2017,24 +1789,32 @@ unsigned shader_core_ctx::TotalInstInPipeline() {
     }
 }
 
+//minimum number of event kernels running + shorttest preemption queue
+unsigned shader_core_ctx::EdgeCoreScheduleCost(kernel_info_t* eventKernel) {
+    unsigned result = _edgeSaveStateList.size() + _eventKernelQueue.size(); // + allWarpsPendingLoads(); // + TotalInstInPipeline();
+    if (_edgeIntState != IDLE) {
+        result++;
+    }
+    int ctaId, warpId;
+    if (!selectIntCtaWarpCtx(ctaId, warpId, eventKernel->GetEdgeSwapEventKernel(), false, false)) {
+        result++;
+    }
+    return result;
+}
+
 bool shader_core_ctx::CanRunEdgeEvent(kernel_info_t* eventKernel) {
     if (_edgeCtas.empty()) {
         return false;
     }
-    if (intInProgress()) {
+    if (_edgeIntState != IDLE) {
         return false;
     }
     //checking resources with bigger kernel
-    //bool isFree = occupy_shader_resource_1block(*(eventKernel->GetEdgeSwapEventKernel()), false, false);
-    //bool canIntWarp = ChooseVictimWarp(eventKernel->GetEdgeSwapEventKernel(), true)!=NULL;
-    //if (!isFree && !canIntWarp) {
-    //    return false;
-    //}
-    unsigned num_free_warps = NumFreeIntWarpsAvailable(eventKernel->GetEdgeSwapEventKernel());
-    unsigned num_victim_warps = NumVictimWarpsAvailable(eventKernel->GetEdgeSwapEventKernel(), true);
-    if ( (num_free_warps+num_victim_warps) < m_config->_edgePreemptionEnginesPerShader ) {
+    bool isFree = occupy_shader_resource_1block(*(eventKernel->GetEdgeSwapEventKernel()), false, false);
+    bool canIntWarp = ChooseVictimWarp(eventKernel->GetEdgeSwapEventKernel())!=NULL;
+    if (!isFree && !canIntWarp) {
         return false;
-    } 
+    }
     return true;
 }
 
@@ -2300,12 +2080,7 @@ bool shader_core_ctx::EventIsRunning() {
 }
 
 bool shader_core_ctx::PreemptionInProgress() {
-    for (int i=0; i<m_config->_edgePreemptionEnginesPerShader; i++) {
-        if (_edgePreemptionEngines[i]->PreemptionInProgress()) {
-            return true;
-        }
-    }
-    return false;   
+   return (_edgeIntState != IDLE && _edgeWid != -1);
 }
 
 bool shader_core_ctx::EventIsRunningOnWarp(unsigned wid) {
@@ -2316,103 +2091,65 @@ bool shader_core_ctx::EventIsRunningOnWarp(unsigned wid) {
     return false;
 }
 
-int shader_core_ctx::GetNextVictimWarpToVisitInFetch() {
-    if (_victimWarpFetchPriorityIds.empty()) {
-        return -1;
-    }
-    int res = _victimWarpFetchPriorityIds.front();
-    _victimWarpFetchPriorityIds.pop_front();
-    return res;
-}
-
-unsigned shader_core_ctx::GetEdgeWidHighPrio(bool &fetch_victim_warp, bool &fetch_event_warp, std::list<int>* visitedEventWarps) {
-    //if preemption is in progress, victim warp should get highest priority, otherwise, oldest event warp is prioratized.
-    unsigned EdgeWarpId = -1; 
-    if (PreemptionInProgress() && m_config->_edgeVictimWarpHighPriority) { 
-        EdgeWarpId = GetNextVictimWarpToVisitInFetch();
-        if (EdgeWarpId != -1) {
-            fetch_victim_warp = true;                
-        }
-    } 
-    if (EdgeWarpId == -1 && EventIsRunning() && m_config->_edgeIntFetchPriority) { //no preemption is runninng, or already visited all victim warps
-        EdgeWarpId = _edgeEventWarpIds.front(); //the oldest event warp
-        fetch_event_warp = true;
-    }    
-
-    // need to visit all victim waprs + prioratize the oldest event warp
-    if( EdgeWarpId!=-1 ) {
-        if (fetch_event_warp) {
-            (*visitedEventWarps).push_back(EdgeWarpId);
-        }
-        if (fetch_victim_warp) {
-            AddVisitedVictimWarpForFetch(EdgeWarpId);
-        }
-        //printf("MARIA DEBUG warp %d on sm %d fetch prio fetch_victim_warp=%d fetch_event_warp=%d \n",
-        //        warp_id, m_sid, fetch_victim_warp, fetch_event_warp);
-       //only printing        
-        bool new_warp = (EdgeWarpId != _edgeFetchLastChosenWarpId);
-        _edgeFetchLastChosenWarpId = EdgeWarpId;
-        if (new_warp) {
-            //EDGE_DPRINT(EdgeDebug, "%lld: FETCH prioritize event warp %d on SM %d \n", gpu_sim_cycle, EdgeWarpId, m_sid);
-        }
-    }
-    return EdgeWarpId;
-}
-
 void shader_core_ctx::fetch()
 {
     if (( m_gpu->EventIsRunning() && !EventIsRunning() && !PreemptionInProgress() ) && m_config->_edgeEventPriority==3) {
         //EDGE_DPRINT(EdgeDebug, "Event is running on gpu - not fetching any other warps on SM %d \n", get_sid());
         return;
     }
-    if( !m_inst_fetch_buffer.m_valid ) {     
+    if( !m_inst_fetch_buffer.m_valid ) {
+
+        // EDGE: Interrupt warp stuff
+        bool intWarpVisited = true;
+        unsigned EdgeWarpId = _edgeWid;
+        //highest prio - warp that currently being preempted, then the event warp (old and new modes)
+        bool iWarpRunningInternal = (_iWarpRunning || !m_config->_edgeRunISR && EventIsRunning() || PreemptionInProgress());
+        //if preemption is in progress, victim warp should get highest priority. 
+        //otherwise, oldest event warp is prioratized
+        if (!m_config->_edgeRunISR && !PreemptionInProgress() && EventIsRunning()) {
+                EdgeWarpId = _edgeEventWarpIds.front(); //the oldest event warp
+        }
+        
+        if( iWarpRunningInternal && m_config->_edgeIntFetchPriority ) {
+            if (m_config->_edgeRunISR) {
+                assert( !_edgeDoFlush ); // If interrupt is running now, shouldn't be flushing...
+                assert( EdgeWarpId != -1 ); // Should also have a valid interrupt warp id
+            }
+            intWarpVisited = false;
+            bool new_warp = (EdgeWarpId != _edgeFetchLastChosenWarpId);
+            _edgeFetchLastChosenWarpId = EdgeWarpId;
+            if (new_warp) {
+                //EDGE_DPRINT(EdgeDebug, "%lld: FETCH prioritize event warp %d on SM %d \n", gpu_sim_cycle, EdgeWarpId, m_sid);
+            }
+        }
 
         // find an active warp with space in instruction buffer that is not already waiting on a cache miss
         // and get next 1-2 instructions from i-cache...
 
-        std::list<int> visitedEventWarps;
-
         for( unsigned i=0; i < m_config->max_warps_per_shader; i++ ) {
             unsigned warp_id = (m_last_warp_fetched+1+i) % (m_config->max_warps_per_shader);
 
-            bool fetch_victim_warp = false;
-            bool fetch_event_warp = false;
-            unsigned EdgeWarpId = GetEdgeWidHighPrio(fetch_victim_warp, fetch_event_warp, &visitedEventWarps);        
-            
-            if ( m_config->_edgeEventPriority==3 && !fetch_event_warp && !fetch_victim_warp ) { //we visited the event/victim warp, can skip the others
-                //EDGE_DPRINT(EdgeDebug, "Event warp %d is running on SM - not scheduling any other warps on this SM \n", warp_id, m_shader->get_sid());
-                break;
+            // First prioritize an interrupt warp if neccessary
+            if( iWarpRunningInternal && m_config->_edgeIntFetchPriority ) {
+                // Interrupt warp is running. Now check if we need to fetch for it
+                if( !intWarpVisited ) {
+                    warp_id = EdgeWarpId;
+                    intWarpVisited = true;
+                } else {
+                    if ( iWarpRunningInternal && m_config->_edgeEventPriority==3) {
+                        //EDGE_DPRINT(EdgeDebug, "Event warp %d is running on SM - not scheduling any other warps on this SM \n", warp_id, m_shader->get_sid());
+                        break;
+                    }
+                    if( warp_id == EdgeWarpId ) { // We already visited the int warp, skip it
+                        warp_id = (warp_id+1) % (m_config->max_warps_per_shader);
+                    }
+                }
             }
 
-            if( EdgeWarpId!=-1 ) {
-                warp_id = EdgeWarpId;
-            }
-                        
-            //skip the warp that already visited for fetch. event - per loop, victim - per preemption
-            if ( EdgeWarpId==-1 && ( std::find( visitedVictimWarps.begin(), visitedVictimWarps.end(), warp_id ) != visitedVictimWarps.end() ||
-                                     std::find( visitedEventWarps.begin(), visitedEventWarps.end(), warp_id ) != visitedEventWarps.end() )) {
-                //printf("MARIA DEBUG skipping visited prio warp %d \n", warp_id);
-                continue;
-            }
-
-            //even if victim warp prio is disabled, it must be visited only once
-            if (!m_config->_edgeVictimWarpHighPriority && 
-                std::find(_victimWarpFetchPriorityIds.begin(), _victimWarpFetchPriorityIds.end(), warp_id)!=_victimWarpFetchPriorityIds.end() ) { 
-                RemoveVictimWarpFetchPriorityId(warp_id);
-                AddVisitedVictimWarpForFetch(warp_id);
-                fetch_victim_warp = true;
-            }            
-
-            //printf("MARIA DEBUG fetch() continues for warp %d sm %d \n", warp_id, m_sid);
             // this code checks if this warp has finished executing and can be reclaimed
             
             bool did_exit=false;
             kernel_info_t* exit_kernel = NULL;
-            //if (m_sid==0 && (warp_id==56 || warp_id==9)) {
-            //    printf("MARIA DEBUG warp %d on SM %d has: hardware_done=%d done_exit=%d functional_done=%d stores_done=%d inst_in_pipeline=%d waiting=%d \n",
-            //            warp_id, m_sid, m_warp[warp_id].hardware_done(), m_warp[warp_id].done_exit(), m_warp[warp_id].functional_done(), 
-            //            m_warp[warp_id].stores_done(), m_warp[warp_id].inst_in_pipeline(), m_warp[warp_id].waiting());
-            //}
             if( m_warp[warp_id].hardware_done() && !m_scoreboard->pendingWrites(warp_id) && !m_warp[warp_id].done_exit() ) {
                 
                 for( unsigned t=0; t<m_config->warp_size;t++) {
@@ -2452,21 +2189,20 @@ void shader_core_ctx::fetch()
             // we skip fetching this warp before checking the ending conditions. Now, the flush needs to check if the 
             // warp has "done_exit()", such that we can record this warp as free warp.  
             // EDGE: Stop fetching instructions for the interrupt ID to flush
-            
-            if( fetch_victim_warp ) {
-                //printf("MARIA DEBUG visited victim warp %d on sm %d, contiunue \n", warp_id, m_sid);
-                continue;
+            //if (m_sid==4) {
+            //    printf("MARIA_DEBUG m_sid=%d, warp_id=%d, done_exit=%d, EdgeWarpId=%d, _edgeDoFlush=%d inst_in_pipe=%d \n", 
+            //        m_sid, warp_id, m_warp[warp_id].done_exit(), EdgeWarpId, _edgeDoFlush, m_warp[warp_id].inst_in_pipeline());
+            //}
+            if( _edgeDoFlush ) {
+                if( warp_id == _edgeWid )
+                    continue;
             }
 
-            //if (m_sid==0 && warp_id==0) {
-            //    printf("MARIA_DEBUG trying to fetch m_sid=%d, warp_id=%d, functional_done=%d, imiss_pending=%d, EdgeWarpId=%d, ibuffer_empty=%d isPaused=%d \n", 
-            //        m_sid, warp_id, m_warp[warp_id].functional_done(), m_warp[warp_id].imiss_pending(), EdgeWarpId, m_warp[warp_id].ibuffer_empty(), m_warp[warp_id].isPaused());
-            //}
 
             // this code fetches instructions from the i-cache or generates memory requests
-            if( !m_warp[warp_id].functional_done() && !m_warp[warp_id].imiss_pending() && m_warp[warp_id].ibuffer_empty() && !m_warp[warp_id].isPaused() ) {
+            if( !m_warp[warp_id].functional_done() && !m_warp[warp_id].imiss_pending() && m_warp[warp_id].ibuffer_empty() ) {
                 address_type pc  = m_warp[warp_id].get_pc();
-                //if (m_sid==0 && warp_id==3) {
+                //if (m_sid==5 && warp_id==20) {
                 //    printf("MARIA fetching instr for core %d on warp %d. pc=%d \n", m_sid, warp_id, pc);
                 //}
                 
@@ -2519,7 +2255,10 @@ void shader_core_ctx::fetch()
                     delete mf;
                 }
 
-                if( EdgeWarpId==-1 || m_config->_edgeIntFetchPriority ) {
+                if( iWarpRunningInternal && m_config->_edgeIntFetchPriority ) {
+                    if( warp_id != EdgeWarpId )
+                        m_last_warp_fetched = warp_id;
+                } else {
                     m_last_warp_fetched = warp_id;
                 }
 
@@ -2582,6 +2321,8 @@ void shader_core_ctx::warp_reaches_barrier(warp_inst_t &inst) {
     switch( bt ) {
         case 0:
             // Regular barrier instruction (bar.sync 0;)
+            if( _edgeIntState == IWARP_RUNNING ) 
+                assert( warpId != _edgeWid ); // Single warp ISR should never hit a barrier
             m_barriers.warp_reaches_barrier(ctaId, warpId);
             break;
 
@@ -2617,13 +2358,6 @@ void shader_core_ctx::issue_warp( register_set& pipe_reg_set, const warp_inst_t*
     m_warp[warp_id].ibuffer_free();
     assert(next_inst->valid());
     **pipe_reg = *next_inst; // static instruction information
-    //edge 
-    if (next_inst->op == BARRIER_OP) {
-        m_warp[warp_id].AddPendingBarrierOp(next_inst);
-        //printf("MARIA DEBUG issuing barrier op on warp %d sm %d \n",
-        //        warp_id, m_sid);
-    }
-
     (*pipe_reg)->issue( active_mask, warp_id, gpu_tot_sim_cycle + gpu_sim_cycle, m_warp[warp_id].get_dynamic_warp_id() ); // dynamic instruction information
     m_stats->shader_cycle_distro[2+(*pipe_reg)->active_count()]++;
     func_exec_inst( **pipe_reg );
@@ -2772,25 +2506,23 @@ void scheduler_unit::cycle()
           iter != m_next_cycle_prioritized_warps.end();
           iter++ ) {
         // Don't consider warps that are not yet valid
-        if ( (*iter) == NULL || (*iter)->done_exit() || (*iter)->isPaused() ) {
+        if ( (*iter) == NULL || (*iter)->done_exit() ) {
             if (*iter!=NULL) {
                 //printf("MARIA_DEBUG core %d warp %d done_exit not scheduled\n", get_sid(), (*iter)->get_warp_id());
             }
             continue;
         }
-        
+        SCHED_DPRINTF( "Testing (warp_id %u, dynamic_warp_id %u)\n",
+                       (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
         unsigned warp_id = (*iter)->get_warp_id();
         unsigned checked=0;
         unsigned issued=0;
         unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
 
-        SCHED_DPRINTF( "Testing (warp_id %u, dynamic_warp_id %u) waiting=%d, ibuffer_empty=%d\n",
-                       (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(), warp(warp_id).waiting(), warp(warp_id).ibuffer_empty() );
-
         //if neither event warp nor victim warp, stop scheduilng when P3
         if ( ( m_shader->m_config->_edgeEventPriority==3 || m_shader->m_config->_edgeStopOtherWarpsInPreemptedSm==1 ) && 
              ( m_shader->EventIsRunning() && !(*iter)->kernel->isEventKernel() ) && 
-             ( m_shader->PreemptionInProgress() && !m_shader->isVictimWarp(warp_id) ) ) {
+             ( m_shader->PreemptionInProgress() && warp_id != m_shader->edgeWid() ) ) {
             //EDGE_DPRINT(EdgeDebug, "Event warp %d is running on core %d - not scheduling any other warps on this SM \n", warp_id, m_shader->get_sid());
             break;
         }
@@ -2971,18 +2703,18 @@ EdgeScheduler::order_warps()
                        ORDERING_GREEDY_THEN_PRIORITY_FUNC,
                        scheduler_unit::sort_warps_by_oldest_dynamic_id );
 
-    bool PreemptionInProgress = !_victimWarpPriorityIds.empty();
-    bool EventIsRunning = ( m_shader->m_config->_edgeIntSchedulePriority &&  
+    bool PreemptionInProgress = _victimWarpPriorityId != -1;
+    bool EventIsRunning = ( m_shader->m_config->_edgeIntSchedulePriority && ( intSignal() || !m_shader->m_config->_edgeRunISR) && 
                             m_shader->EventIsRunning() && findIntWarp(false, m_shader->GetOldestEventWarpId())!=NULL );
 
     char* print_str;
     if (PreemptionInProgress && EventIsRunning) { //victim - first prio, then the event
         scheduleEventWarps();
-        scheduleVictimWarps();
+        scheduleVictimWarp();
         print_str = "victim and event warps";
     }
     if (PreemptionInProgress) { //only victim
-        scheduleVictimWarps();
+        scheduleVictimWarp();
         print_str = "victim warp";
     }
     if (EventIsRunning) { //only event
@@ -3009,12 +2741,34 @@ EdgeScheduler::order_warps()
 
 }
 
-void EdgeScheduler::scheduleVictimWarps() {
-    for (int i=0; i<_victimWarpPriorityIds.size(); i++) {
-        scheduleVictimWarp(_victimWarpPriorityIds[i]);
-    }    
+// Add the victim warp to the head of the priority queue for warp scheduling
+void
+EdgeScheduler::scheduleVictimWarp()
+{
+    WarpVector::iterator it;
+    shd_warp_t* victimWarp = NULL;
+
+    for( it = m_next_cycle_prioritized_warps.begin(); 
+            it != m_next_cycle_prioritized_warps.end(); 
+            ++it) {
+        if( (*it)->get_warp_id() == _victimWarpPriorityId ) {
+            victimWarp = *it;
+            break;
+        }
+    }
+  
+    // Only one scheduler will have this warp
+    if( victimWarp ) {
+        // Remove the victim warp and add it to the front of the list
+        m_next_cycle_prioritized_warps.erase(it);
+        m_next_cycle_prioritized_warps.insert(m_next_cycle_prioritized_warps.begin(), victimWarp);
+        //EDGE_DPRINT(EdgeDebug, "%lld: SCHEDULE prioritizing victim warp %d on SM %d \n", 
+        //        gpu_sim_cycle, victimWarp->get_warp_id(), get_sid());
+    }
 }
 
+
+// Add the iWarp to the head of the priority queue for warp scheduling
 void EdgeScheduler::scheduleEventWarps() {
     for (int i=0; i<m_shader->_edgeEventWarpIds.size(); i++) {
         scheduleEventWarp(m_shader->_edgeEventWarpIds[i]);
@@ -3033,26 +2787,6 @@ void EdgeScheduler::scheduleEventWarp(int wid) {
         //EDGE_DPRINT(EdgeDebug, "%lld: SCHEDULE prioritizing event warp %d on SM %d \n", 
         //    gpu_sim_cycle, intWarp->get_warp_id(), get_sid());
     }
-}
-
-void EdgeScheduler::scheduleVictimWarp(int wid) {
-    WarpVector::iterator it;
-    shd_warp_t* victimWarp = NULL;
-    for( it = m_next_cycle_prioritized_warps.begin(); 
-            it != m_next_cycle_prioritized_warps.end(); 
-            ++it) {
-        if( (*it)->get_warp_id() == wid ) {
-            victimWarp = *it;
-            break;
-        }
-    }
-    if ( victimWarp == NULL ) { // Only one scheduler will have this warp
-        return;
-    }
-    m_next_cycle_prioritized_warps.erase(it);
-    m_next_cycle_prioritized_warps.insert(m_next_cycle_prioritized_warps.begin(), victimWarp);
-    //EDGE_DPRINT(EdgeDebug, "%lld: SCHEDULE prioritizing event warp %d on SM %d \n", 
-    //    gpu_sim_cycle, intWarp->get_warp_id(), get_sid());
 }
 
 shd_warp_t* EdgeScheduler::findIntWarp(bool Erase, int warp_id) 
@@ -3397,12 +3131,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst)
     // EDGE: Update per kernel stats
     kernel_info_t* k = getWarpKernel(inst.warp_id()); 
     k->stats()._nInsn += inst.active_count();
-    int cta_id = m_warp[inst.warp_id()].get_cta_id();
-    if (!k->isEventKernel()) {
-        _cta_ninsn[cta_id]++;
-        assert(_cta_ninsn_left[cta_id]>0);
-        _cta_ninsn_left[cta_id]--;
-    }
+
 }
 
 void shader_core_ctx::writeback()
@@ -4111,9 +3840,13 @@ bool ldst_unit::dropLoad(const warp_inst_t* inst)
 
     bool wid_match;
     bool EdgeIsBusy;
-    wid_match = ( m_core->EventIsRunningOnWarp(inst->warp_id()) || m_core->isVictimWarp(inst->warp_id()) || m_core->m_warp[inst->warp_id()].isPaused() );
-    EdgeIsBusy = m_core->EventIsRunningOnWarp(inst->warp_id()) || m_core->intInProgress() || m_core->m_warp[inst->warp_id()].isPaused();
-
+    if (m_core->m_config->_edgeRunISR) {
+        wid_match = m_core->_edgeWid == inst->warp_id();
+        EdgeIsBusy = !m_core->_edgeIsFree;
+    } else {
+        wid_match = m_core->EventIsRunningOnWarp(inst->warp_id()) || (!m_core->_edgeIsFree && m_core->_edgeWid == inst->warp_id());
+        EdgeIsBusy = m_core->EventIsRunningOnWarp(inst->warp_id()) || !m_core->_edgeIsFree;
+    }
     //printf("MARIA DEBUG dropLoad called with inst.pc=%d core=%d wid=%d EdgeIsBusy=%d wid_match=%d isInFlightLoad=%d \n", 
     //    inst->pc, m_core->get_sid(), inst->warp_id(), EdgeIsBusy, wid_match, m_core->m_warp[inst->warp_id()].isInFlightLoad(inst));
     // First check if we have an interrupted victim warp that matches this instruction warp_id. 
@@ -4327,16 +4060,9 @@ void shader_core_ctx::register_cta_thread_exit( unsigned cta_num, kernel_info_t*
 
     // Check if this is the last thread in the CTA to complete. If so, clean up the resources.
     if (!m_cta_status[cta_num]) {
-        if (!kernel->isEventKernel()) {
-            active_ctas.erase(std::find(active_ctas.begin(), active_ctas.end(), cta_num));
-        }
-        _CTAKernelMap[cta_num] = NULL;
+
         m_gpu->UpdateAvgCTATime(gpu_sim_cycle - m_cta_start_time[cta_num]);
-        if (cta_num < m_config->max_cta_per_core) {
-            //printf("%lld: MARIA DEBUG CTA %d completed for kernel %s on Shader %d. Ninsn=%d, Ncycles=%d \n", 
-            //        gpu_sim_cycle, cta_num, kernel->entry()->get_name().c_str(), m_sid, 
-            //        _cta_ninsn[cta_num],  _cta_ncycles[cta_num]);
-        }
+
         // Should definitely have at least one active CTA on this core, since a thread just completed. 
         assert( m_n_active_cta > 0 );
         m_n_active_cta--;
@@ -4425,12 +4151,6 @@ void shader_core_ctx::NewEdgeDoOneKernelCompletion(kernel_info_t* kernel, int ci
 
     //return CTA to pool
     _edgeCtas.push_back(cid);
-    _CTAKernelMap[cid] = NULL;
-    while (kernel->PreemptedAndPausedWarps()) {
-        int warp_id = kernel->GetNextPreemptedAndPausedWarpId();
-        m_warp[warp_id].UnsetPaused();
-        
-    }
 
     if (!kernel->GetEdgeSaveStateValid()) {
         return;
@@ -4442,7 +4162,7 @@ void shader_core_ctx::NewEdgeDoOneKernelCompletion(kernel_info_t* kernel, int ci
         //printf("NewEdgeDoOneKernelCompletion OriginalState==NULL for core %d warp %d ")
         assert(OriginalState);
     }
-    //RemoveVisitedVictimWarpForFetch(OriginalState->wid());
+    
     edgeResetIntState(OriginalState->wid(), OriginalState->cid(), true);
     edgeRestoreHwState(OriginalState);
 }
@@ -5258,7 +4978,7 @@ void barrier_set_t::edgeRestoreVictimBarrier( unsigned wid )
 }
 
 // EDGE: FIXME:
-barrier_set_t::barrier_set_t( unsigned max_warps_per_core, unsigned max_cta_per_core, shader_core_ctx *m_shader_p )
+barrier_set_t::barrier_set_t( unsigned max_warps_per_core, unsigned max_cta_per_core )
 {
    m_max_warps_per_core = max_warps_per_core;
    m_max_cta_per_core = max_cta_per_core;
@@ -5275,8 +4995,6 @@ barrier_set_t::barrier_set_t( unsigned max_warps_per_core, unsigned max_cta_per_
        _edgeBarrier.push_back(false);
        _edgeReleaseBarrier.push_back(false);
    }
-
-   m_shader = m_shader_p;
 }
 
 // during cta allocation
@@ -5380,9 +5098,6 @@ void barrier_set_t::warp_reaches_barrier( unsigned cta_id, unsigned warp_id )
             }
         }
    }
-   m_shader->getWarp(warp_id)->RemovePendingBarrierOp();
-   //printf("MARIA DEBUG issuing barrier op on warp %d sm %d \n",
-   //             warp_id, m_shader->get_sid());
 }
 
 // fetching a warp
@@ -5490,7 +5205,12 @@ void shader_core_ctx::warp_exit( unsigned warp_id )
 	//if (m_warp[warp_id].get_n_completed() == get_config()->warp_size)
 	//if (this->m_simt_stack[warp_id]->get_num_entries() == 0)
 	if (done) {
-  		m_barriers.warp_exit( warp_id );
+        if( m_warp[warp_id].isIntWarp() && m_config->_edgeRunISR ) {
+            assert( warp_id == _edgeWid );
+            m_barriers.intWarpExit( warp_id, _edgeCid );
+        } else {
+    		m_barriers.warp_exit( warp_id );
+        }
     }
 }
 
@@ -6063,16 +5783,16 @@ simt_core_cluster::simt_core_cluster( class gpgpu_sim *gpu,
     }
 }
 
-// bool simt_core_cluster::isIWarpRunning() const 
-// {
-//     for( unsigned i=0; i<m_config->n_simt_cores_per_cluster; ++i ) {
-//         if( m_core[i]->isIWarpRunning() )
-//             return true;
-//     }
-//     return false;
-// }
+bool simt_core_cluster::isIWarpRunning() const 
+{
+    for( unsigned i=0; i<m_config->n_simt_cores_per_cluster; ++i ) {
+        if( m_core[i]->isIWarpRunning() )
+            return true;
+    }
+    return false;
+}
 
-bool simt_core_cluster::intInProgress() 
+bool simt_core_cluster::intInProgress() const 
 {
     for( unsigned i=0; i<m_config->n_simt_cores_per_cluster; ++i ) {
         if( m_core[i]->intInProgress() )
@@ -6164,7 +5884,7 @@ unsigned simt_core_cluster::issue_block2core()
             // First select core kernel, if no more CTAs, get a new kernel only when the core completes
             kernel = m_core[core]->get_kernel();
             if( !m_gpu->kernel_more_cta_left(kernel) ) {
-                if( m_core[core]->get_not_completed() == 0 ) {
+                if( m_core[core]->get_not_completed() == 0 || m_core[core]->onlyIWarpRunning() ) {
                     kernel = m_gpu->select_kernel(m_cluster_id);
                     if( kernel ) 
                         m_core[core]->set_kernel(kernel);

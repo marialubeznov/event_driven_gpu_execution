@@ -307,7 +307,7 @@ bool GPUEventManager::scheduleCoreEvent(unsigned smID, int eventId)
     if (eventId != WARMUP_EVENT_ID) {
     	_gpu->get_shader(smID)->_edgeInterruptAssertCycle.push_back(gpu_sim_cycle + gpu_tot_sim_cycle);
         _gpu->get_shader(smID)->_edgeInterruptAssertCycleForISR.push_back(gpu_sim_cycle + gpu_tot_sim_cycle);
-    	//printf("MARIA EDGE: new incoming interrupt on core %d at time %lld\n", smID, gpu_sim_cycle + gpu_tot_sim_cycle);
+    	printf("MARIA EDGE: new incoming interrupt on core %d at time %lld\n", smID, gpu_sim_cycle + gpu_tot_sim_cycle);
     };
     return true;
 }

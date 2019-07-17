@@ -532,18 +532,6 @@ void shader_core_config::reg_options(class OptionParser * opp)
    option_parser_register(opp, "-edge_dont_launch_event_kernel", OPT_BOOL, &_edgeDontLaunchEventKernel,
                  "Just perform the preemption, don't launch the kernel (default = 0)",
                  "0");    
-   option_parser_register(opp, "-edge_launch_multi_warp_event_kernel", OPT_BOOL, &_edgeLaunchMultiWarpEventKernel,
-                 "Enables support of multi warp event kernels that preempt multiple warps (default = 0)",
-                 "0"); 
-   option_parser_register(opp, "-edge_preemption_engines_per_shader", OPT_UINT32, &_edgePreemptionEnginesPerShader, 
-                 "Number of preemption engines per shader, each one is able to preempt a warp (default = 2)",
-                 "2"); 
-   option_parser_register(opp, "-edge_sync_preemption_engines", OPT_BOOL, &_edgeSyncPreemptionEngines,
-                 "If set, event kernel is not launched (even if its single warp and single warp is available) until all preemption engines completed preemption process (default = 1)",
-                 "1");  
-   option_parser_register(opp, "-edge_use_kernel_cpi_for_preempt_cost", OPT_BOOL, &_edgeUseKernelCPIForPreemptionCost,
-                 "If set, kernel CPI is used for the preemption cost calc. Otherwise, CTA CPI is used. (default = 0)",
-                 "0");                     
 }
 
 void gpgpu_sim_config::reg_options(option_parser_t opp)
@@ -1668,15 +1656,6 @@ void shader_core_ctx::mem_instruction_stats(const warp_inst_t &inst)
 ////////////////////////////////////////////////////////////////////////////////////////////////
 // CDP code for concurrent kernels on same SM
 ////////////////////////////////////////////////////////////////////////////////////////////////
-bool gpgpu_sim::can_issue_1block(kernel_info_t& kernel) {
-    for( unsigned i=0; i<m_config.num_cluster(); ++i ) {
-        if (get_shader(i)->can_issue_1block(kernel)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 kernel_info_t* shader_core_ctx::get_hwtid_kernel(int tid)
 {
     if( !m_threadState[tid].m_active )
@@ -1691,7 +1670,8 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t& kernel)
     if( m_config->gpgpu_concurrent_kernel_sm ) {    
         if( m_config->max_cta(kernel) < 1 )
             return false;
-        return occupy_shader_resource_1block(kernel, false, false);
+
+        return occupy_shader_resource_1block(kernel, false);
     } else {
         return (get_n_active_cta() < m_config->max_cta(kernel));
     } 
@@ -1750,7 +1730,6 @@ int shader_core_ctx::edgeFindAvailableHwtid(unsigned int cta_size, bool occupy)
 
         unsigned hwTid = 0;
         for( hwTid = step; hwTid < (step+cta_size); ++hwTid ) {
-            //printf("MARIA DEBUG testing step %d hwTid=%d nThreads=%d \n", step, hwTid, nThreads);
             if( m_occupied_hwtid.test(hwTid) )
                 break;
         }
@@ -2032,7 +2011,7 @@ void shader_core_ctx::issue_block2core( kernel_info_t &kernel )
     if( !m_config->gpgpu_concurrent_kernel_sm ) {
         set_max_cta(kernel);
     } else {
-        assert(occupy_shader_resource_1block(kernel, true, false));
+        assert(occupy_shader_resource_1block(kernel, true));
     }
 
     // Now the running count signifies the total number of CTAs running for a kernel,
@@ -2064,12 +2043,7 @@ void shader_core_ctx::issue_block2core( kernel_info_t &kernel )
         }
     }
     assert( free_cta_hw_id!=(unsigned)-1 );
-    if (!kernel.isEventKernel()) {
-      _cta_ninsn[free_cta_hw_id] = 0;
-      _cta_ncycles[free_cta_hw_id] = 0;
-      _cta_ninsn_left[free_cta_hw_id] = kernel.GetTotalWarpInsnPerCta();
-      active_ctas.push_back(free_cta_hw_id);
-    }
+
     // determine hardware threads and warps that will be used for this CTA
     int cta_size = kernel.threads_per_cta();
 
@@ -2106,7 +2080,6 @@ void shader_core_ctx::issue_block2core( kernel_info_t &kernel )
     for (unsigned i = start_thread; i<end_thread; i++) {
         m_threadState[i].m_cta_id = free_cta_hw_id;
         warp_id = i/m_config->warp_size;
-
         nthreads_in_block += ptx_sim_init_thread(kernel,
                                             &m_thread[i],
                                             m_sid,
@@ -2155,8 +2128,20 @@ void shader_core_ctx::issue_block2core( kernel_info_t &kernel )
     // EDGE
     _CTAKernelMap[free_cta_hw_id] = &kernel;
 	// Skippng launch of event kernel if fon't launch event kernel is set
-    if (kernel.isEventKernel() && m_config->_edgeDontLaunchEventKernel) {
-        MarkEventKernelAsDoneHack(startWid, endWid, start_thread, end_thread);
+     if(kernel.isEventKernel() && m_config->_edgeDontLaunchEventKernel )
+    {
+        for( unsigned i=start_thread; i<end_thread; ++i ) {
+          m_thread[i]->set_done();
+          m_thread[i]->registerExit();
+          m_thread[i]->exitCore();
+          }
+      for(unsigned j=startWid; j< endWid; ++j)
+      {
+        for(int i=0;i<m_config->warp_size;i++)
+        {
+          m_warp[j].set_completed(i);
+        }
+      }
     }
     m_n_active_cta++;
 
@@ -2188,117 +2173,6 @@ bool gpgpu_sim::EventIsRunning() {
     return false;
 }
 
-unsigned gpgpu_sim::EdgeDrainingCost(kernel_info_t* eventKernel) {
-    if (can_issue_1block(*eventKernel)) {
-        return 0;
-    }
-    unsigned min_cost = get_shader(0)->EdgeDrainingCost();
-    for (unsigned i=1; i<m_shader_config->n_simt_clusters; i++) {
-        if (get_shader(i)->EdgeDrainingCost() < min_cost )
-            min_cost = get_shader(i)->EdgeDrainingCost();
-    }
-    return min_cost;
-}
-
-unsigned shader_core_ctx::EdgeDrainingCost() {
-    unsigned min_cost = std::numeric_limits<unsigned int>::max(); 
-    for (unsigned i=0; i<active_ctas.size(); i++) {
-        if (_cta_ninsn[active_ctas[i]] == 0) {
-            continue; //if cta just started execution, its draining cost if VERY high 
-        }
-        double cost = GetCTIofCTA(active_ctas[i]) * _cta_ninsn_left[active_ctas[i]] ;
-        if (cost < min_cost) 
-            min_cost = cost;
-    }
-    return min_cost;
-}
-
-unsigned gpgpu_sim::EdgePreemptionCost(kernel_info_t* eventKernel) {
-    unsigned min_cost = get_shader(0)->EdgePreemptionCost(eventKernel);
-    for (unsigned i=1; i<m_shader_config->n_simt_clusters; i++) {
-        if (get_shader(i)->EdgePreemptionCost(eventKernel) < min_cost ) {
-            min_cost = get_shader(i)->EdgePreemptionCost(eventKernel);
-            break;
-        }
-    }
-    return min_cost;
-}
-
-double shader_core_ctx::GetCTIofCTA(int cta_id) {    
-    if (m_config->_edgeUseKernelCPIForPreemptionCost) {
-        kernel_info_t* k = _CTAKernelMap[cta_id];
-        //printf("DEBUG MARIA _nCycles=%d _nInsn=%d \n", k->stats()._nCycles , k->stats()._nInsn);
-        return ( k->stats()._nCycles / k->stats()._nInsn);
-    } else {
-        return ( _cta_ncycles[cta_id] / _cta_ninsn[cta_id] );
-    }
-}
-
-double shader_core_ctx::GetMaxCPI(std::vector<unsigned> victim_warp_indices, int N) {
-    double res = 0;
-    for (unsigned i=0; i<N; i++) {
-        int warp_id = victim_warp_indices[i];
-        int cta_id = m_warp[warp_id].get_cta_id();
-        if (_cta_ninsn[cta_id] == 0) 
-            continue;
-        double CPI = GetCTIofCTA(cta_id);
-        if (CPI > res) 
-            res = CPI;
-    }
-    if (res==0) { return 1; } //all CTAs have unknown CPI
-    return res;
-}
-
-unsigned shader_core_ctx::EdgePreemptionCost(kernel_info_t* eventKernel) {
-    if (!CanRunEdgeEvent(eventKernel)) {
-        return std::numeric_limits<unsigned int>::max();
-    }
-    unsigned num_free_warps = NumFreeIntWarpsAvailable(eventKernel->GetEdgeSwapEventKernel());
-    if (num_free_warps >= m_config->_edgePreemptionEnginesPerShader) {
-        printf("MARIA DEBUG all needed warps are free, zero preemption cost \n");
-        return 0;
-    }
-    std::vector<unsigned> victim_warp_indices = VictimWarpsAvailable(eventKernel->GetEdgeSwapEventKernel(), true);
-    double cost = 0;
-    for (unsigned i=0; i<(m_config->_edgePreemptionEnginesPerShader - num_free_warps); i++) {
-        int warp_id = victim_warp_indices[i];
-        int cta_id = m_warp[warp_id].get_cta_id();
-        assert(cta_id<m_config->max_cta_per_core);
-
-        kernel_info_t* k = _CTAKernelMap[cta_id];
-
-        double CPI;
-        if (_cta_ninsn[cta_id] == 0) { //can't think of anything better  
-            CPI = GetMaxCPI(victim_warp_indices, m_config->_edgePreemptionEnginesPerShader - num_free_warps);
-        } else {
-            CPI = GetCTIofCTA(cta_id);
-        }
-        unsigned inst_in_pipe = m_warp[warp_id].num_inst_in_pipeline();
-        if (m_inst_fetch_buffer.m_valid && m_inst_fetch_buffer.m_warp_id==warp_id) {
-            inst_in_pipe++;
-        }
-        if (m_warp[warp_id].imiss_pending()) {
-            cost += (double)k->stats()._nInstStallCycles / (double)k->stats()._nWarpInstStalls;
-        }
-        if (!m_config->_edgeFlushIBuffer) {
-            cost += CPI * m_warp[warp_id].num_inst_in_pipeline();
-        }
-        if (!m_config->_edgeReplayLoads && warpPendingLoads(warp_id)>0) {
-            int avg_data_mem_access_latency = (double)k->stats()._totalDataMemAccessLatency / (double)k->stats()._numberOfDataLoads;
-            cost += avg_data_mem_access_latency * warpPendingLoads(warp_id);
-        }
-        
-        // printf("MARIA DEBUG calculating cost of victim warp %d on sm %d. CPI=%f inst_in_pipe=%d cost=%d ", 
-        //       warp_id, m_sid, CPI, m_warp[warp_id].num_inst_in_pipeline(), cost);
-        // if (m_warp[warp_id].imiss_pending()) 
-        //     printf("avg_inst_mem_access_latency: %d ", (double)k->stats()._nInstStallCycles / (double)k->stats()._nWarpInstStalls);
-        // if (!m_config->_edgeReplayLoads && warpPendingLoads(warp_id)>0) 
-        //     printf("avg_data_mem_access_latency: %d ", (double)k->stats()._totalDataMemAccessLatency / (double)k->stats()._numberOfDataLoads);
-        // printf("\n");
-    }
-    return cost;
-}
-
 //If there are fast path events in the event queue, schedule them first
 //Fast path event kernel is a kernel which has 32 threads + it meets the 
 //resources requirements (number of RFs etc)
@@ -2322,29 +2196,22 @@ bool gpgpu_sim::ScheduleFastPathEventKernels(unsigned *smIdx) {
         return false;
     }
     assert(eventKernel);
-    unsigned drainingCost = EdgeDrainingCost(eventKernel);
-    unsigned preemptionCost = EdgePreemptionCost(eventKernel);
-    
-    if ( drainingCost<=preemptionCost ) { //fall back to draining
-        EDGE_DPRINT(EdgeDebug, "%lld: Draining is chosen for event KernelId=%d. Draining cost: %d Preemption Cost: %d \n", 
-                gpu_sim_cycle, eventKernel->get_uid(), drainingCost, preemptionCost);
-        return false;
-    }
-    EDGE_DPRINT(EdgeDebug, "%lld: Preemption is chosen for event KernelId=%d. Draining cost: %d Preemption Cost: %d \n", 
-                gpu_sim_cycle, eventKernel->get_uid(), drainingCost, preemptionCost);
 
-    std::vector<unsigned> sm_candidates = GetAllUnderutilizedSMsForEvent(eventKernel);
-    int idx = ChooseSMWithLowestPreemptionCost(sm_candidates, eventKernel);
+    int idx = ChooseSMWithShortestPreemptionQueueAndOldestRunningEvent(GetFreeSMs(eventKernel), eventKernel); //look for SM wo event kernels + empty preemption queue
+    
+    if (idx<0) {
+        idx = ChooseSMWithShortestPreemptionQueueAndOldestRunningEvent(GetAllSMs(eventKernel), eventKernel); //look for all SMs with no preemption in progress + lowest cost
+    }
 
     if (idx<0) {
         //EDGE_DPRINT(EdgeDebug, "%lld: All SMs preemption engines are busy, can't assign a new event: ", gpu_sim_cycle);
         //for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) {
-        //    printf( "SM%d: NoCTA=%d, IntInProgress=%d FreeWarp: %d canIntWarp: %d ",
-        //            i, get_shader(i)->_edgeCtas.empty(), get_shader(i)->intInProgress(), 
-        //           get_shader(i)->occupy_shader_resource_1block(*(eventKernel->GetEdgeSwapEventKernel()), false, false), 
+        //    printf( "SM%d: NoCTA=%d, IntState=%d FreeWarp: %d canIntWarp: %d ",
+        //            i, get_shader(i)->_edgeCtas.empty(), get_shader(i)->getEdgeState(), 
+        //            get_shader(i)->occupy_shader_resource_1block(*(eventKernel->GetEdgeSwapEventKernel()), false, false), 
         //            get_shader(i)->ChooseVictimWarp(eventKernel->GetEdgeSwapEventKernel())!=NULL );
         //}
-        //printf("\n");
+        printf("\n");
         return false;
     }
 
@@ -2358,7 +2225,7 @@ bool gpgpu_sim::ScheduleFastPathEventKernels(unsigned *smIdx) {
     }
 
     int ctaId, warpId;
-    bool IsFreeWarp = get_shader(idx)->selectIntCtaWarpCtx(ctaId, warpId, eventKernel, false, false, true);
+    bool IsFreeWarp = get_shader(idx)->selectIntCtaWarpCtx(ctaId, warpId, eventKernel, false, false);
     EDGE_DPRINT(EdgeDebug, "%lld: Chosen SM %d for fast path event %s %p. Free warp: %d Warp Id: %d \n", 
                 gpu_sim_cycle, idx, eventKernel->entry()->get_name().c_str(), eventKernel, IsFreeWarp, warpId);
 
@@ -2369,98 +2236,57 @@ bool gpgpu_sim::ScheduleFastPathEventKernels(unsigned *smIdx) {
     return true;
 }
 
-//all sms with minimum number of executing events
-std::vector<unsigned> gpgpu_sim::GetAllUnderutilizedSMsForEvent(kernel_info_t* eventKernel) {
-    int min_num_events_per_sm = GetMinNumOfEventsPerSm();
-    std::vector<unsigned> result;
-    for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) {
-        if (get_shader(i)->CanRunEdgeEvent(eventKernel) && (get_shader(i)->NumEventsRunning() == min_num_events_per_sm) ) { 
-            result.push_back(i); 
-        }
-    } 
-    return result;
-}
-
-unsigned gpgpu_sim::GetMinNumOfEventsPerSm() {
-    unsigned res = std::numeric_limits<unsigned int>::max();
-    for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) 
-        if (get_shader(i)->NumEventsRunning() < res) 
-            res = get_shader(i)->NumEventsRunning();        
-    assert(res < std::numeric_limits<unsigned int>::max());
-    return res;
-}
-
-unsigned shader_core_ctx::NumEventsRunning() {
-    unsigned result = _edgeSaveStateList.size(); //+ _eventKernelQueue.size(); // + allWarpsPendingLoads(); // + TotalInstInPipeline();
-    if (intInProgress()) {
-        result++;
+std::vector<unsigned> gpgpu_sim::GetFreeSMs(kernel_info_t* eventKernel) {
+std::vector<unsigned> result;
+for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) {
+    if (get_shader(i)->CanRunEdgeEvent(eventKernel) && get_shader(i)->getEdgeState() == IDLE && !get_shader(i)->EventIsRunning() && get_shader(i)->EventQueueSize()==0) {
+        result.push_back(i); 
     }
-    return result;
+}
+return result;
 }
 
-int gpgpu_sim::ChooseSMWithLowestPreemptionCost(std::vector<unsigned> sms_set, kernel_info_t* eventKernel) {
-    if (sms_set.empty()) {
-        return -1;
-    }
-    unsigned min_cost = std::numeric_limits<unsigned int>::max();
-    int min_idx = -1;
-    //EDGE_DPRINT(EdgeDebug, "%lld: SMs costs: ", gpu_sim_cycle); 
-    for (unsigned i=0; i<sms_set.size(); i++) {
-        unsigned core_schedule_cost = get_shader(sms_set[i])->EdgePreemptionCost(eventKernel);
-        //printf(" %d ", core_schedule_cost); 
-        if (core_schedule_cost==0) {
-            return sms_set[i];
-        }
-        if (core_schedule_cost < min_cost) {
-            min_idx = sms_set[i];
-            min_cost = core_schedule_cost;
-        }
-    }
-    //printf("\n");
-    assert(min_idx>=0);
-    return min_idx;
+std::vector<unsigned> gpgpu_sim::GetAllSMs(kernel_info_t* eventKernel) {
+std::vector<unsigned> result;
+for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) {
+  if (get_shader(i)->CanRunEdgeEvent(eventKernel))
+    result.push_back(i); 
+}
+return result;
 }
 
-// //minimum number of event kernels running + shorttest preemption queue
-// unsigned shader_core_ctx::EdgeCoreScheduleCost(kernel_info_t* eventKernel) {
-//     unsigned result = _edgeSaveStateList.size(); // + _eventKernelQueue.size(); // + allWarpsPendingLoads(); // + TotalInstInPipeline();
-//     if (intInProgress()) {
-//         result++;
-//     }
-//     return result;
-// }
-// std::vector<unsigned> gpgpu_sim::GetFreeSMs(kernel_info_t* eventKernel) {
-//     std::vector<unsigned> result;
-//     for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) {
-//         if (get_shader(i)->CanRunEdgeEvent(eventKernel) && !get_shader(i)->EventIsRunning() ) { // && get_shader(i)->EventQueueSize()==0) {
-//             result.push_back(i); 
-//         }
-//     } 
-//     return result;
-// }
+unsigned gpgpu_sim::ChooseSMWithFreeWarp(std::vector<unsigned> sms_set, kernel_info_t* eventKernel) {
+assert(!sms_set.empty());
+for (unsigned i=0; i<sms_set.size(); i++) {
+    int ctaId, warpId;
+    bool isFreeWarp = get_shader(sms_set[i])->selectIntCtaWarpCtx(ctaId, warpId, eventKernel, false, false);
+    if (isFreeWarp) {
+        //EDGE_DPRINT(EdgeDebug, "%lld: Found free warp %d in a free SM %d (wo running event kernel) for fast path event %s %p \n", 
+                    //gpu_sim_cycle, warpId, sms_set[i], eventKernel->entry()->get_name().c_str(), eventKernel);
+        return sms_set[i];
+    }
+}
+return sms_set[0];
+}
 
-// std::vector<unsigned> gpgpu_sim::GetAllSMs(kernel_info_t* eventKernel) {
-// std::vector<unsigned> result;
-// for (unsigned i=0; i<m_shader_config->n_simt_clusters; i++) {
-//   if (get_shader(i)->CanRunEdgeEvent(eventKernel))
-//     result.push_back(i); 
-// }
-// return result;
-// }
-
-// unsigned gpgpu_sim::ChooseSMWithFreeWarp(std::vector<unsigned> sms_set, kernel_info_t* eventKernel) {
-// assert(!sms_set.empty());
-// for (unsigned i=0; i<sms_set.size(); i++) {
-//     int ctaId, warpId;
-//     bool isFreeWarp = get_shader(sms_set[i])->selectIntCtaWarpCtx(ctaId, warpId, eventKernel, false, false, true);
-//     if (isFreeWarp) {
-//         //EDGE_DPRINT(EdgeDebug, "%lld: Found free warp %d in a free SM %d (wo running event kernel) for fast path event %s %p \n", 
-//                     //gpu_sim_cycle, warpId, sms_set[i], eventKernel->entry()->get_name().c_str(), eventKernel);
-//         return sms_set[i];
-//     }
-// }
-// return sms_set[0];
-// }
+int gpgpu_sim::ChooseSMWithShortestPreemptionQueueAndOldestRunningEvent(std::vector<unsigned> sms_set, kernel_info_t* eventKernel) {
+if (sms_set.empty()) {
+    return -1;
+}
+unsigned min_core_schedule_cost = get_shader(sms_set[0])->EdgeCoreScheduleCost(eventKernel);
+unsigned min_queue_idx = sms_set[0];
+EDGE_DPRINT(EdgeDebug, "%lld: SMs costs: ", gpu_sim_cycle); 
+for (unsigned i=0; i<sms_set.size(); i++) {
+  unsigned core_schedule_cost = get_shader(sms_set[i])->EdgeCoreScheduleCost(eventKernel);
+  printf(" %d ", core_schedule_cost); 
+    if (core_schedule_cost < min_core_schedule_cost) {
+        min_queue_idx = sms_set[i];
+        min_core_schedule_cost = core_schedule_cost;
+    }
+}
+printf("\n");
+return min_queue_idx;
+}
 
 // int ctaId, warpId, idx;
 // bool isFreeSM, isFreeWarp;
@@ -2578,12 +2404,6 @@ if( g_interactive_debugger_enabled )
 for( unsigned i=0; i< m_running_kernels.size(); ++i ) {
     if( m_running_kernels[i] != NULL && m_running_kernels[i]->hasStarted() ) {
         m_running_kernels[i]->stats()._nCycles++;
-    }
-}
-
-for( unsigned i=0; i< m_shader_config->n_simt_clusters; ++i) {
-    for (unsigned j=0; j<get_shader(i)->active_ctas.size(); j++) {
-        get_shader(i)->_cta_ncycles[get_shader(i)->active_ctas[j]]++;
     }
 }
 

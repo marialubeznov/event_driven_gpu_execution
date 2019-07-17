@@ -177,9 +177,9 @@ public:
     stat_t _edgeCompleted;
 
     //memory stats
-    stat_t _totalDataMemAccessLatency;
+    stat_t _averageDataMemAccessLatency;
     stat_t _numberOfDataLoads;
-    stat_t _totalInstMemAccessLatency;
+    stat_t _averageInstMemAccessLatency;
     stat_t _numberOfInstLoads;
 };
 
@@ -293,17 +293,7 @@ public:
     bool EdgeOccupiedExtraRegs()    { return _edgeOccupiedExtraRegs; }
     void SetEdgeOccupiedExtraThreads() { _edgeOccupiedExtraThreads = true; }
     bool EdgeOccupiedExtraThreads()    { return _edgeOccupiedExtraThreads; }
-    void AddPreemptedAndPausedWarpId(int id) { _edgePreemptedAndPausedWarpIds.push_back(id); }
-    unsigned GetNextPreemptedAndPausedWarpId() { 
-      assert(!_edgePreemptedAndPausedWarpIds.empty());
-      unsigned res = _edgePreemptedAndPausedWarpIds.front(); 
-      _edgePreemptedAndPausedWarpIds.pop_front();
-      return res;
-    }
-    bool PreemptedAndPausedWarps() { return !_edgePreemptedAndPausedWarpIds.empty(); }
-    unsigned GetTotalWarpInsnPerCta();
 private:
-   std::list<int> _edgePreemptedAndPausedWarpIds;
    kernel_info_t* _swapKernel;
    bool _edgeOccupiedExtraRegs = false;
    bool _edgeOccupiedExtraThreads = false;

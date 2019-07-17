@@ -308,15 +308,6 @@ public:
                 return false;
         return true;
     }
-
-    unsigned num_inst_in_ibuffer() const {
-        unsigned res = 0;
-        for( unsigned i=0; i < IBUFFER_SIZE; i++) 
-            if(m_ibuffer[i].m_valid) 
-                res++;
-        return res;
-    }
-
     void ibuffer_flush()
     {
         for(unsigned i=0;i<IBUFFER_SIZE;i++) {
@@ -347,7 +338,7 @@ public:
         m_stores_outstanding--;
     }
 
-    unsigned num_inst_in_pipeline() const { return m_inst_in_pipeline; }
+    unsigned num_inst_in_pipeline() { return m_inst_in_pipeline; }
 
     bool inst_in_pipeline() const { return m_inst_in_pipeline > 0; }
     void inc_inst_in_pipeline() { 
@@ -401,30 +392,8 @@ public:
     }
 
     kernel_info_t* kernel;
-    bool isPaused() const {
-        return paused;
-    }
-    void SetPaused() { 
-        assert(!paused);
-        paused = true; 
-    }
-    void UnsetPaused() { 
-        assert(paused);
-        paused = false; 
-    }
-    void AddPendingBarrierOp(const warp_inst_t* inst) {
-        _edgePendingBarrierOps.push_back(inst);
-    }
-    void RemovePendingBarrierOp() {
-        _edgePendingBarrierOps.pop_front();
-    }
-    bool HasPendingBarrierOps() const {
-        return (!_edgePendingBarrierOps.empty());
-    }
-    bool HasBarrierOpInIbuffer(bool edgeSkipBarrier) const;
 private:
-    std::list<const warp_inst_t*> _edgePendingBarrierOps;
-    bool paused = false;
+    
     // Max number of instructions that can be fetched concurrently per-warp
     static const unsigned IBUFFER_SIZE = 64;
     class shader_core_ctx *m_shader;
@@ -613,7 +582,7 @@ public:
                    register_set* mem_out,
                    int id )
         : scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id ), 
-            _iSignal(0), _excludeWarpId(-1), _edgeLastChosenWarpId(-1) {}
+            _iSignal(0), _excludeWarpId(-1), _victimWarpPriorityId(-1), _edgeLastChosenWarpId(-1) {}
 	virtual ~EdgeScheduler () {}
 	virtual void order_warps ();
     virtual void done_adding_supervised_warps() {
@@ -621,36 +590,28 @@ public:
     }
 
     
-    //void     setIntSignal()     { assert( !_iSignal ); _iSignal = 1; }
-    //void     clearIntSignal()   { assert( _iSignal ); _iSignal = 0; }
-    //unsigned intSignal() const  { return _iSignal; }
+    void     setIntSignal()     { assert( !_iSignal ); _iSignal = 1; }
+    void     clearIntSignal()   { assert( _iSignal ); _iSignal = 0; }
+    unsigned intSignal() const  { return _iSignal; }
     
     void     excludeWarpId(int wid) { assert( _excludeWarpId == -1 ); _excludeWarpId = wid; }
     void     includeWarpId(int wid) { assert( _excludeWarpId == wid ); _excludeWarpId = -1; }
 
-    void     prioritizeVictimWarp(int wid) { 
-        assert(std::find(_victimWarpPriorityIds.begin(), _victimWarpPriorityIds.end(), wid) == _victimWarpPriorityIds.end()); 
-        _victimWarpPriorityIds.push_back(wid); 
-    }
-    void     restoreVictimWarp(int wid) { 
-        assert(std::find(_victimWarpPriorityIds.begin(), _victimWarpPriorityIds.end(), wid) != _victimWarpPriorityIds.end()); 
-        _victimWarpPriorityIds.erase(std::find(_victimWarpPriorityIds.begin(), _victimWarpPriorityIds.end(), wid));
-    }
+    void     prioritizeVictimWarp(int wid) { assert(_victimWarpPriorityId == -1); _victimWarpPriorityId = wid; }
+    void     restoreVictimWarp(int wid) { assert(_victimWarpPriorityId == wid); _victimWarpPriorityId = -1; }
 
     void getSupervisedWarps(WarpVector& dest) const;
 
 protected:
     void        scheduleEventWarps();
     void        scheduleEventWarp(int wid);
-
-    void        scheduleVictimWarp(int wid);
-    void        scheduleVictimWarps();
+    void        scheduleVictimWarp();
     shd_warp_t* findIntWarp(bool Erase, int warp_id);
 
     unsigned    _iSignal;
     int         _excludeWarpId;
 
-    std::vector<int>        _victimWarpPriorityIds;
+    int         _victimWarpPriorityId;
     int         _edgeLastChosenWarpId;
 };
 
@@ -1172,7 +1133,7 @@ private:
 
 class barrier_set_t {
 public:
-   barrier_set_t( unsigned max_warps_per_core, unsigned max_cta_per_core, shader_core_ctx *m_shader_p );
+   barrier_set_t( unsigned max_warps_per_core, unsigned max_cta_per_core );
 
    // during cta allocation
    void allocate_barrier( unsigned cta_id, warp_set_t warps );
@@ -1238,7 +1199,6 @@ private:
    std::vector<bool> _edgeReleaseBarrier;
 
    warp_set_t _edgeVictimWarpAtBarrier;   
-   shader_core_ctx                 *m_shader;
 };
 
 struct insn_latency_info {
@@ -1735,8 +1695,6 @@ struct shader_core_config : public core_config
     unsigned            _edgeMaxTimerEvents;
     bool                _edgeTimerEventOnly;
     bool                _edgeSkipBarrier;
-    unsigned            _edgePreemptionEnginesPerShader;
-    bool                _edgeUseKernelCPIForPreemptionCost;
 
     // EDGE - event
     unsigned            _edgeEventKernelLaunchLatency;
@@ -1760,8 +1718,6 @@ struct shader_core_config : public core_config
     unsigned                _edgeLimitConcurrentEvents;
     bool                _edgeGenRequestsPatternByDelayAndLimit; //for batch only for now
     bool                _edgeDontLaunchEventKernel;
-    bool                _edgeLaunchMultiWarpEventKernel;
-    bool                _edgeSyncPreemptionEngines;
 
     bool                _isMemcConv;
 
@@ -2043,69 +1999,6 @@ private:
     unsigned id;
 };
 
-class shader_preemption_engine {
-public:
-    shader_preemption_engine(class shader_core_ctx* m_shader_p, 
-                             class gpgpu_sim* m_gpu_p, 
-                             const struct shader_core_config *m_config_p,
-                             std::vector<shd_warp_t>* m_warp_p) { 
-        m_shader = m_shader_p;
-        m_gpu = m_gpu_p;
-        m_config = m_config_p;
-        m_warp = m_warp_p;
-        edgeIntCycleReset();
-    }
-    void edgeIntCycleReset();
-    void edgeIntCycle();
-    void setiKernel(kernel_info_t* kernel) { _iKernel = kernel; }
-    EdgeIntStates getEdgeState() { return _edgeIntState; }
-    void setEdgeState(EdgeIntStates newState) { _edgeIntState = newState; }
-    
-    
-    unsigned GetWid() { return _edgeWid; }
-    unsigned GetCid() { return _edgeCid; }
-    bool PreemptionInProgress() { return (_edgeIntState != IDLE && _edgeWid != -1); }
-    void StartNewWarpPreemption(kernel_info_t* kernel, bool saveContext, bool launchKernel);
-    void EnableRegSavingInKernel();
-    unsigned long long getTotalIntSchedStalls() const { return _edgeTotalIntSchedStall; }
-    unsigned long long getTotalIntRunCycles() const { return _edgeTotalIntRunCycles; }
-    unsigned long long getTotalIntSchedCycles() const { return _edgeTotalIntSchedCycles; }
-
-
-private:
-    shader_core_ctx* m_shader;
-    int _edgeWid;       // Current interrupt warp id
-    int _edgeCid;       // Current interrupt cta id
-    bool _edgeIsFree;   // If current interrupt has a free context 
-    bool _edgeDoFlush; 
-    bool _edgeDropLoads;
-    
-    
-    EdgeIntStates _edgeIntState;
-    gpgpu_sim *m_gpu;
-    const struct shader_core_config* m_config;
-    //std::vector<kernel_info_t*> _eventKernelQueue;
-    
-    std::vector<shd_warp_t>* m_warp;
-    kernel_info_t* _iKernel;
-
-    unsigned long long _edgeIntWarpSelectCycle;
-    unsigned long long _edgeIntLaunchCycle;
-    unsigned long long _edgeTotalIntSchedStall = 0;
-    unsigned long long _edgeCurrentIntSchedStallCycles = 0;
-    unsigned long long _edgeTotalIntRunCycles = 0;
-    unsigned long long _edgeTotalIntSchedCycles;
-    
-    //
-    //unsigned startThread;
-    //unsigned endThread;
-    bool _saveContext;
-    bool _launchKernel;
-
-    ///shd_warp_t& warp(int i) { return (*m_warp)[i]; }   
-};
-
-
 
 class shader_core_ctx : public core_t {
 public:
@@ -2198,22 +2091,17 @@ public:
 
     void resetOccupiedResources();
 
-    bool intInProgress();
-    //bool onlyIWarpRunning() const { return ( isIWarpRunning() && m_not_completed == 32 ); }  
+    bool intInProgress() const { return (_edgeIntState != IDLE); }
+    bool isIWarpRunning() const { return _iWarpRunning; }
+    bool onlyIWarpRunning() const { return ( isIWarpRunning() && m_not_completed == 32 ); }  
 
     void scheduleInt();
-    unsigned GetEdgeWidHighPrio(bool &fetch_victim_warp, bool &fetch_event_warp, std::list<int>* visitedEventWarps);
-    bool selectVictimWarp(int& warpId, kernel_info_t* EventKernel, bool interrupty, bool launchKernel);
-    bool selectIntCtaWarpCtx(int& ctaId, int& warpId, kernel_info_t* EventKernel, bool interrupt, bool occupy, bool launchKernel);
+    bool selectIntCtaWarpCtx(int& ctaId, int& warpId, kernel_info_t* EventKernel, bool interrupt, bool occupy);
     int findFreeCta(); // FIXME: Make private
-    void configureIntCtx(int cid, int wid, bool isFree, kernel_info_t* _iKernel);
-    int canInterruptWarp(const shd_warp_t* victimWarp, kernel_info_t* EventKernel, bool launchKernel) const;
+    void configureIntCtx(int cid, int wid, bool isFree);
+    int canInterruptWarp(const shd_warp_t* victimWarp, kernel_info_t* EventKernel) const;
 
     bool warpNeedsFlush(int wid);
-
-    unsigned NumFreeIntWarpsAvailable(kernel_info_t* EventKernel);
-    unsigned NumVictimWarpsAvailable(kernel_info_t* EventKernel, bool launchKernel);
-    std::vector<unsigned> VictimWarpsAvailable(kernel_info_t* EventKernel, bool launchKernel);
 
     unsigned warpPendingLoads(int wid) const { return m_warp[wid].pendingLoads(); }
     unsigned allWarpsPendingLoads();
@@ -2237,7 +2125,7 @@ public:
     void edgeIntCycleReset();
 
     void edgeResetIntState(unsigned CurrEdgeWid, unsigned CurrEdgeCid, bool freeThreads);
-    void edgeSaveResetHwState(EdgeSaveState* _edgeSaveStateInput, unsigned wid, unsigned cid);
+    void edgeSaveResetHwState(EdgeSaveState* _edgeSaveStateInput);
     void edgeRestoreHwState(EdgeSaveState* _edgeSaveStateInput);
 
     bool edgeWarpPendingRegWrites(int warpId);
@@ -2249,20 +2137,15 @@ public:
 
     void printICacheUtilization();
 
-    unsigned long long getMinIntSchedStalls() const { return _edgeMinIntSchedStall; }
-    unsigned long long getMaxIntSchedStalls() const { return _edgeMaxIntSchedStall; }
-    void setMinIntSchedStalls(unsigned long long val) { _edgeMinIntSchedStall = val; }
-    void setMaxIntSchedStalls(unsigned long long val) { _edgeMaxIntSchedStall = val; }
-    unsigned long long getTotalIntSchedStalls();
-
+    unsigned long long getNumInts() const { return _edgeNumInts; }
     unsigned long long getNumIntFreeWarps() const { return _edgeNumFreeWarpInts; }
-    void IncNNumIntFreeWarps() { _edgeNumFreeWarpInts++; }
     unsigned long long getNumIntVictimWarps() const { return _edgeNumVictimWarpInts; }
-    void IncNumVictimWarpInts() { _edgeNumVictimWarpInts++; }
     unsigned long long getNumNoFlushVictimWarps() const { return _edgeNumNoFlushVictimWarpInts; }
     unsigned long long getNumIntExitWarps() const { return _edgeNumExitWarpInts; }
-    void IncNumExitWarpInts() { _edgeNumExitWarpInts++; }
-        
+    unsigned long long getTotalIntSchedStalls() const { return _edgeTotalIntSchedStall; }
+    unsigned long long getMinIntSchedStalls() const { return _edgeMinIntSchedStall; }
+    unsigned long long getMaxIntSchedStalls() const { return _edgeMaxIntSchedStall; }
+    
     unsigned long long getNumReplayLoads() const { return _nReplayLoads; }
     unsigned long long getNumBadReplayLoads() const { return _nBadReplayLoads; }
 
@@ -2271,9 +2154,8 @@ public:
     unsigned long long getNumEdgeBarriers() const { return _edgeNumEdgeBarriers; }
     unsigned long long getNumEdgeReleaseBarriers() const { return _edgeNumEdgeReleaseBarriers; }
 
-    unsigned long long getTotalIntSchedCycles();
-
-    unsigned long long getTotalIntRunCycles();
+    unsigned long long getTotalIntSchedCycles() const { return _edgeTotalIntSchedCycles; }
+    unsigned long long getTotalIntRunCycles() const { return _edgeTotalIntRunCycles; }
 
     unsigned long long getTotalBarriersSkipped() const { return _edgeSkippedBarriers; }
     unsigned long long getTotalBarriersRestored() const { return _edgeBarriersRestored; }
@@ -2311,8 +2193,6 @@ public:
     bool ldst_unit_response_buffer_full() const;
     unsigned get_not_completed() const { return m_not_completed; }
     unsigned get_n_active_cta() const { return m_n_active_cta; }
-    void inc_n_active_cta() { m_n_active_cta++; }
-
     unsigned isactive() const {if(m_n_active_cta>0) return 1; else return 0;}
     kernel_info_t *get_kernel() { return m_kernel; }
     unsigned get_sid() const {return m_sid;}
@@ -2473,111 +2353,49 @@ public:
      void inc_total_n_atomic() { total_n_atomic++; }
 
      //MARIA functions for new EDGE
-     double GetCTIofCTA(int cta_id);
+     void setiKernel(kernel_info_t* kernel) { _iKernel = kernel; }
+     void setPrivateIntSignal() { _intSignal = true; }
+     EdgeIntStates getEdgeState() { return _edgeIntState; }
+     void setEdgeState(EdgeIntStates newState) { _edgeIntState = newState; }
+     void incIntSigCount() { _intSigCount++; }
+     void AddNewEdgeState(unsigned key, EdgeSaveState* new_state) {
+        _edgeSaveStateList.insert(std::make_pair(key, new_state));
+     }
+     EdgeSaveState* GetEdgeState(unsigned key) {
+        return _edgeSaveStateList[key];
+     }
+     EdgeSaveState* GetAndEraseEdgeState(unsigned key) {
+        EdgeSaveState* result = _edgeSaveStateList[key];
+        _edgeSaveStateList.erase(key);
+        return result;
+     }
      bool EventIsRunningOnWarp(unsigned wid);
      bool EventIsRunning();
      bool PreemptionInProgress();
-     unsigned NumEventsRunning();
+     unsigned EdgeCoreScheduleCost(kernel_info_t* eventKernel);
      bool CanRunEdgeEvent(kernel_info_t* eventKernel);
      unsigned TotalInstInPipeline();
      //void NewEdgeSaveStateAndIssueBlock2Core();
      void StopPreemption(bool restoreState, EdgeIntStates currState);
      void NewEdgeDoOneKernelCompletion(kernel_info_t* kernel, int cid);
-     
+     unsigned EventQueueSize() { return _eventKernelQueue.size(); }
      void ScheduleFastPathEvent(kernel_info_t* kernel);
      void StartNewWarpPreemption(kernel_info_t* kernel);
      void AddEventWarpId(unsigned wid) { _edgeEventWarpIds.push_back(wid); }
      unsigned GetOldestEventWarpId() { return _edgeEventWarpIds.front(); }
      unsigned GetEventWarpId(int idx) { return _edgeEventWarpIds[idx]; }
-     shd_warp_t* ChooseVictimWarp(kernel_info_t* EventKernel, bool launchKernel);
+     shd_warp_t* ChooseVictimWarp(kernel_info_t* EventKernel);
      std::list<unsigned> _edgeCtas;
 
      void EnableRegSavingInKernel();
      bool AreThereFreeRegsOnShader(kernel_info_t* k);
      std::vector<unsigned> _edgeEventWarpIds;
-     std::vector< shader_preemption_engine* > _edgePreemptionEngines;
-     //void ClearVictimWarpPriorityIds() { 
-     //   _victimWarpFetchPriorityIds.clear(); 
-     //   _victimWarpIds.clear();
-     //}    
-     std::list<int>        _victimWarpIds;
-
-     bool isVictimWarp(int wid) const {
-        return ( std::find( _victimWarpIds.begin(), _victimWarpIds.end(), wid ) != _victimWarpIds.end() );
-     }
-
-    void AddNewEdgeState(unsigned key, EdgeSaveState* new_state) {
-       _edgeSaveStateList.insert(std::make_pair(key, new_state));
-    }
-    EdgeSaveState* GetEdgeState(unsigned key) {
-       return _edgeSaveStateList[key];
-    }
-    EdgeSaveState* GetAndEraseEdgeState(unsigned key) {
-       EdgeSaveState* result = _edgeSaveStateList[key];
-       _edgeSaveStateList.erase(key);
-       return result;
-    }
-    unsigned long long getNumInts() const { return _edgeNumInts; }
-    unsigned long long _edgeNumInts;
-
-    void prioritizeVictimWarp(int wid) {
-        for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
-            ((EdgeScheduler*)schedulers[i])->prioritizeVictimWarp(wid);
-        }
-    }
-
-    void restoreVictimWarp(int wid) {
-        for( int i=0; i<m_config->gpgpu_num_sched_per_core; ++i) {
-            ((EdgeScheduler*)schedulers[i])->restoreVictimWarp(wid);
-        }
-    }
-
-    void MarkEventKernelAsDoneHack(int StartWid, int EndWid, int startThread, int endThread);
-    int GetNextVictimWarpToVisitInFetch();
-    void AddVictimWarp(int wid) {
-        assert(wid>=0);
-        assert(std::find(_victimWarpIds.begin(), _victimWarpIds.end(), wid) == _victimWarpIds.end());
-        _victimWarpIds.push_back(wid); //contains all warps which preemption is in progress
-    }
-
-    void AddVisitedVictimWarpForFetch(int wid) { //victim warp is fetched only once per preemption process
-        assert(std::find( visitedVictimWarps.begin(), visitedVictimWarps.end(), wid ) == visitedVictimWarps.end());
-        visitedVictimWarps.push_back(wid);
-    }
-
-    bool RemoveVisitedVictimWarpForFetch(int wid) { //used when preemption ends
-        if (std::find( visitedVictimWarps.begin(), visitedVictimWarps.end(), wid ) == visitedVictimWarps.end()) { //can happen sometimes
-            return false;
-        }
-        visitedVictimWarps.erase(std::find( visitedVictimWarps.begin(), visitedVictimWarps.end(), wid ) );
-        return true;
-    }
-
-    void AddVictimWarpFetchPriorityId(int wid) {
-        assert(wid>=0);
-        assert(std::find(_victimWarpFetchPriorityIds.begin(), _victimWarpFetchPriorityIds.end(), wid) == _victimWarpFetchPriorityIds.end());
-        _victimWarpFetchPriorityIds.push_back(wid); //used only for priority in fetch()
-    }
-
-    void RemoveVictimWarpFetchPriorityId(int wid) {
-        assert(std::find( _victimWarpFetchPriorityIds.begin(), _victimWarpFetchPriorityIds.end(), wid ) != _victimWarpFetchPriorityIds.end());
-        _victimWarpFetchPriorityIds.erase(std::find( _victimWarpFetchPriorityIds.begin(), _victimWarpFetchPriorityIds.end(), wid ) );                
-    }
-    std::vector<unsigned> active_ctas;
-    std::vector<unsigned> _cta_ncycles;
-    unsigned EdgeDrainingCost();
-    unsigned EdgePreemptionCost(kernel_info_t* eventKernel);
-    double GetMaxCPI(std::vector<unsigned> victim_warp_indices, int N);
-    bool pendingWrites(int wid) { return m_scoreboard->pendingWrites(wid); }
+     int edgeWid() { return _edgeWid; }
 private:
-    std::vector<unsigned> _cta_ninsn;
-    std::vector<unsigned> _cta_ninsn_left;
-     std::list<int>        visitedVictimWarps;
      int _edgeFetchLastChosenWarpId = -1;
      //std::list<unsigned> _edgeCtas;
-     std::list<int>        _victimWarpFetchPriorityIds; //list of warps that require preemption
      
-
+     std::vector<kernel_info_t*> _eventKernelQueue;
      int _intSigCount = 0;
      unsigned launched_event_kernel_tbs_num = 0;
      unsigned total_n_atomic = 0;
@@ -2690,18 +2508,39 @@ private:
     // run on this shader, where the warp_id is the static warp slot.
     unsigned m_dynamic_warp_id;
 
-    //EDGE
+    // EDGE
+    bool        _iWarpRunning;
+    bool        _intSignal;
+
+    EdgeIntStates _edgeIntState;
     EdgeSaveState* _edgeSaveState;
     std::map<unsigned, EdgeSaveState*> _edgeSaveStateList;
     
+    int _edgeWid;       // Current interrupt warp id
+    int _edgeCid;       // Current interrupt cta id
+    bool _edgeIsFree;   // If current interrupt has a free context 
+    bool _edgeDoFlush; 
+
     std::vector<bool> _edgeActiveReservedCtas;
 
-    //
-      
+    unsigned long long _edgeIntWarpSelectCycle;
+    unsigned long long _edgeIntLaunchCycle;
+
+    unsigned long long _edgeTotalIntSchedCycles;
+    unsigned long long _edgeTotalIntRunCycles;
+
+    bool _edgeDropLoads;
+    
+    unsigned long long _edgeNumInts;
     unsigned long long _edgeNumFreeWarpInts;
     unsigned long long _edgeNumVictimWarpInts;
     unsigned long long _edgeNumNoFlushVictimWarpInts;
     unsigned long long _edgeNumExitWarpInts;
+
+    unsigned long long _edgeCurrentIntSchedStallCycles;
+    unsigned long long _edgeTotalIntSchedStall;
+    unsigned long long _edgeMaxIntSchedStall;
+    unsigned long long _edgeMinIntSchedStall;
 
     unsigned long long _nReplayLoads;
     unsigned long long _nBadReplayLoads;
@@ -2712,9 +2551,6 @@ private:
     unsigned long long _edgeBarriersRestored;
 
     unsigned long long _edgeNumOfIdleCycles = 0;
-
-    unsigned long long _edgeMaxIntSchedStall;
-    unsigned long long _edgeMinIntSchedStall;
 
     struct WarpIntStats {
         WarpIntStats() 
@@ -2762,26 +2598,22 @@ private:
     // CDP - Concurrent kernels on SM
 public:
     bool can_issue_1block(kernel_info_t& kernel);
-    bool occupy_shader_resource_1block(kernel_info_t& kernel, bool occupy, bool interrupt);
+    bool occupy_shader_resource_1block(kernel_info_t& kernel, bool occupy, bool interrupt=false);
     void release_shader_resource_1block(unsigned hw_ctaid, kernel_info_t& kernel);
     int find_available_hwtid(unsigned int cta_size, bool occupy);
     int edgeFindAvailableHwtid(unsigned int cta_size, bool occupy);
 
     kernel_info_t* get_hwtid_kernel(int tid); 
 
-    // EDGEs
-    void edgeOccupyShaderResourceIntWhenWarpIsFree(kernel_info_t* k, int _edgeWid);
-    void edgeRecordIntStall(int wid);
+    // EDGE
+    void edgeOccupyShaderResourceIntWhenWarpIsFree(kernel_info_t* k);
+    void edgeRecordIntStall();
 
     unsigned long long getWarpOccupancyPerCycle() const { return _warpOccupancyPerCycle; }
     unsigned long long getRegisterUtilization() const { return _registerUtilizationPerCycle; }
     bool isFreeIntWarpAvailable();
     
-    void inc_occupied_ctas() { m_occupied_ctas++; }
-    unsigned int get_occupied_shmem() { return m_occupied_shmem; }
-    unsigned int get_occupied_n_threads() { return m_occupied_n_threads; } 
-    unsigned int get_occupied_regs() { return m_occupied_regs; } 
-    unsigned int get_occupied_ctas() { return m_occupied_ctas; } 
+
 private:
     unsigned int m_occupied_n_threads; 
     unsigned int m_occupied_shmem; 
@@ -2844,7 +2676,7 @@ public:
 
     void initEDGE(kernel_info_t* k);
     bool isIWarpRunning() const;
-    bool intInProgress();
+    bool intInProgress() const;
 
 
 private:
@@ -2895,6 +2727,7 @@ private:
     shader_core_ctx *m_core;
     simt_core_cluster *m_cluster;
 };
+
 
 inline int scheduler_unit::get_sid() const { return m_shader->get_sid(); }
 

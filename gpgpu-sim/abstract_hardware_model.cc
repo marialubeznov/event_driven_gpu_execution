@@ -567,9 +567,9 @@ KernelStats::KernelStats(const KernelStats& rhs)
     _TotalLatency = rhs._TotalLatency;
     _edgePreemptionQueueWait = rhs._edgePreemptionQueueWait;
     _edgePreemptionLen = rhs._edgePreemptionLen;
-    _totalDataMemAccessLatency = rhs._totalDataMemAccessLatency;
+    _averageDataMemAccessLatency = rhs._averageDataMemAccessLatency;
     _numberOfDataLoads = rhs._numberOfDataLoads;
-    _totalInstMemAccessLatency = rhs._totalInstMemAccessLatency;
+    _averageInstMemAccessLatency = rhs._averageInstMemAccessLatency;
     _numberOfInstLoads = rhs._numberOfInstLoads;
     _edgeCompleted = rhs._edgeCompleted;
 }
@@ -589,9 +589,9 @@ void KernelStats::reset()
     _TotalLatency = 0;
     _edgePreemptionQueueWait = 0;
     _edgePreemptionLen = 0;
-    _totalDataMemAccessLatency = 0;
+    _averageDataMemAccessLatency = 0;
     _numberOfDataLoads = 0;
-    _totalInstMemAccessLatency = 0;
+    _averageInstMemAccessLatency = 0;
     _numberOfInstLoads = 0;
     _edgeCompleted = 0;
 }
@@ -607,9 +607,9 @@ void KernelStats::operator+=(const KernelStats& rhs)
     _TotalLatency += rhs._TotalLatency;
     _edgePreemptionQueueWait += rhs._edgePreemptionQueueWait;
     _edgePreemptionLen += rhs._edgePreemptionLen;
-    _totalDataMemAccessLatency += rhs._totalDataMemAccessLatency;
+    _averageDataMemAccessLatency += rhs._averageDataMemAccessLatency;
     _numberOfDataLoads += rhs._numberOfDataLoads;
-    _totalInstMemAccessLatency += rhs._totalInstMemAccessLatency;
+    _averageInstMemAccessLatency += rhs._averageInstMemAccessLatency;
     _numberOfInstLoads += rhs._numberOfInstLoads;
 }
 
@@ -624,9 +624,9 @@ void KernelStats::print(FILE* f) const
     fprintf(f, "event_kernel_cycles_since_interrupt = %lld\n", _TotalLatency);
     fprintf(f, "event_kernel_cycles_wait_in_preemption_queue = %lld\n", _edgePreemptionQueueWait);
     fprintf(f, "event_kernel_preemption_len_in_cycles = %lld\n", _edgePreemptionLen);
-    fprintf(f, "averageDataMemAccessLatency = %lld\n", (double)_totalDataMemAccessLatency / (double)_numberOfDataLoads);
+    fprintf(f, "averageDataMemAccessLatency = %lld\n", _averageDataMemAccessLatency);
     fprintf(f, "numberOfDataLoads = %lld\n", _numberOfDataLoads);
-    fprintf(f, "averageInstMemAccessLatency = %lld\n", (double)_totalInstMemAccessLatency / (double)_numberOfInstLoads);
+    fprintf(f, "averageInstMemAccessLatency = %lld\n", _averageInstMemAccessLatency);
     fprintf(f, "numberOfInstLoads = %lld\n", _numberOfInstLoads);
 }
 
@@ -656,58 +656,6 @@ void KernelStats::print(FILE* f, std::string& name, unsigned num) const
     fprintf(f, "%s avg_event_kernel_preemption_len_in_cycles = %.4lf\n", name.c_str(), ((double)_edgePreemptionLen / (double)num));
 }
 
-
-#define CONV_CTA_NINSN 3800
-#define MM_CTA_NINSN 15624
-#define BP1_CTA_NINSN 1161
-#define BP2_CTA_NINSN 580
-//for BFS there is a high variability. 240-3000. 
-//Its really hard to know "how many instr left". Taking the maximum
-#define BFS1_CTA_NINSN 4590
-#define BFS2_CTA_NINSN 450
-#define INITMEMC1_CTA_NINSN 448
-#define INITMEMC2_CTA_NINSN 4000
-
-//the proper way to implement this function is by extracting the relevant number
-//from ptx similat to what is done for regs. this is just a hack to get it working
-//for pact rebuttal
-unsigned kernel_info_t::GetTotalWarpInsnPerCta() {
-    std::string convName("_Z20filterActs_YxX_colorILi4ELi32ELi1ELi4ELi1ELb0ELb1EEvPfS0_S0_iiiiiiiiiiffi"); 
-    std::string MmName("matrixMul");
-    std::string BPName1("_Z22bpnn_layerforward_CUDAPfS_S_S_ii"); 
-    std::string BPName2("_Z24bpnn_adjust_weights_cudaPfiS_iS_S_"); 
-    std::string BFSName1("_Z6KernelP4NodePiPbS2_S2_S1_i");   
-    std::string BFSName2("_Z7Kernel2PbS_S_S_i");
-    std::string initMemcName1("_Z18initDataStructuresv");   
-    std::string InitMemcName2("_Z13initHashTableP10SetRequestjj");    
-    
-    if (!convName.compare(entry()->get_name().c_str())) {
-        return CONV_CTA_NINSN;
-    }       
-    if (!MmName.compare(entry()->get_name().c_str())) {
-        return MM_CTA_NINSN;
-    }
-    if (!BPName1.compare(entry()->get_name().c_str())) {
-        return BP1_CTA_NINSN;
-    }
-    if (!BPName2.compare(entry()->get_name().c_str())) {
-        return BP2_CTA_NINSN;
-    }
-    if (!BFSName1.compare(entry()->get_name().c_str())) {
-        return BFS1_CTA_NINSN;
-    }
-    if (!BFSName2.compare(entry()->get_name().c_str())) {
-        return BFS2_CTA_NINSN;
-    }
-    if (!initMemcName1.compare(entry()->get_name().c_str())) {
-        return INITMEMC1_CTA_NINSN;
-    }
-    if (!InitMemcName2.compare(entry()->get_name().c_str())) {
-        return INITMEMC2_CTA_NINSN;
-    }
-    printf("GetTotalWarpInsnPerCta: Unknown kernel %s, aborting \n", entry()->get_name().c_str());
-    abort();
-}
 
 void kernel_info_t::printStats(FILE* f) const
 {

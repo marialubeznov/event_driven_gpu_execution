@@ -431,17 +431,16 @@ void CudaCore::UpdateKernelStatsOnLoadResponse(PacketPtr pkt) {
 
     //int AccessDepth = pkt->req->getAccessDepth(); --> Not updated in Ruby!!!
     //uint64_t TranslateLatency = pkt->req->getTranslateLatency(); 
-    unsigned AccessLatency = pkt->req->getAccessLatencyGPU(); 
-    assert(AccessLatency>0);
+    uint64_t AccessLatency = pkt->req->getAccessLatencyGPU(); 
+    
     if (pkt->req->masterId()%2 == 0) {
         kernel->stats()._numberOfDataLoads++;
-        kernel->stats()._totalDataMemAccessLatency += AccessLatency;
-        //printf("MARIA DEBUG updating kernel load latency stats AccessLatency=%d _totalDataMemAccessLatency=%lld _numberOfDataLoads=%lld avg=%f \n",
-        //    AccessLatency, kernel->stats()._totalDataMemAccessLatency, kernel->stats()._numberOfDataLoads, 
-        //    (double)kernel->stats()._totalDataMemAccessLatency / (double)kernel->stats()._numberOfDataLoads);
+        kernel->stats()._averageDataMemAccessLatency = ( kernel->stats()._averageDataMemAccessLatency * (kernel->stats()._numberOfDataLoads-1) 
+                                                + AccessLatency ) / kernel->stats()._numberOfDataLoads;
     } else {
         kernel->stats()._numberOfInstLoads++;
-        kernel->stats()._totalInstMemAccessLatency += AccessLatency;
+        kernel->stats()._averageInstMemAccessLatency = ( kernel->stats()._averageInstMemAccessLatency * (kernel->stats()._numberOfInstLoads-1) 
+                                                + AccessLatency ) / kernel->stats()._numberOfInstLoads;
     }
     
     //kernel->stats()._averageMemAccessDepth = ( kernel->stats()._averageMemAccessDepth * (kernel->stats()._numberOfLoads-1) 

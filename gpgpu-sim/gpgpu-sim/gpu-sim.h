@@ -376,7 +376,6 @@ public:
    void set_kernel_done( kernel_info_t *kernel );
 
    // EDGE
-   bool can_issue_1block(kernel_info_t& kernel);
    void QueueEventKernel(kernel_info_t *kernel);
    void LaunchEventKernel();
    bool scheduleTimerEvent(unsigned eventId, unsigned long long N);
@@ -385,11 +384,11 @@ public:
    
    void reserveEventResources(kernel_info_t* k);
    bool ScheduleFastPathEventKernels(unsigned *smIdx);
-   std::vector<unsigned> GetAllUnderutilizedSMsForEvent(kernel_info_t* eventKernel);
-   unsigned GetMinNumOfEventsPerSm();
-   int ChooseSMWithLowestPreemptionCost(std::vector<unsigned> sms_set, kernel_info_t* eventKernel);
-   unsigned EdgeDrainingCost(kernel_info_t* eventKernel);
-   unsigned EdgePreemptionCost(kernel_info_t* eventKernel);
+   std::vector<unsigned> GetFreeSMs(kernel_info_t* eventKernel);
+   std::vector<unsigned> GetAllSMs(kernel_info_t* eventKernel);
+   unsigned ChooseSMWithFreeWarp(std::vector<unsigned> sms_set, kernel_info_t* eventKernel);
+   int ChooseSMWithShortestPreemptionQueueAndOldestRunningEvent(std::vector<unsigned> sms_set, kernel_info_t* eventKernel);
+
 
 
    // EDGE DEBUG
