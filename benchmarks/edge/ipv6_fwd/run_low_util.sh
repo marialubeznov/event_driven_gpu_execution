@@ -16,8 +16,8 @@
  			echo "-edge_gen_requests_pattern_by_delay_and_limit 0" >> gpgpusim.fermi.config.template 			
  			cd ${LOCAL_GEM5_PATH}/benchmarks/edge/ipv6_fwd
  			#run test
-			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task" run_ipv6_low_util.pbs
-			sleep 5
+			../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c ${LOCAL_GEM5_PATH}/benchmarks/edge/ipv6_fwd/gem5_fusion_ip_forward_conv -o "-t 3 -p 1015 -n 64 -g ${bg_task}" > prio_"${prio}"_all_opt_"${type}"_bg_task_"${bg_task}"_low_util.log
+            sleep 5
  			#move to results dir
  			#mv prio_"$prio"_all_opt_"$type"_bg_task_"$bg_task".log results_1G_Apr04
  		done

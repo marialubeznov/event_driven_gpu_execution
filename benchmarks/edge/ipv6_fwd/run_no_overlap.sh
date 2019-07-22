@@ -19,8 +19,8 @@
  			for n in 0 1 2
 			do
  				rate=`shuf -i 2000-5000 -n 1`
-				qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task",RATE="$rate" run_ipv6_no_overlap.pbs
-				sleep 10
+				../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c ${LOCAL_GEM5_PATH}/benchmarks/edge/ipv6_fwd/gem5_fusion_ip_forward_conv -o "-t 3 -p ${rate} -n 64 -g ${bg_task}" > prio_"${prio}"_all_opt_"${type}"_bg_task_"${bg_task}"_no_overlap_"${rate}"_rate.log
+                sleep 10
 			done
  		done
  	done

@@ -201,17 +201,17 @@
 
 #----------other EDGE configs--------#
 
--edge_event_priority 1
-#-edge_event_kernel_reserve_sm 8
+-edge_event_priority 3
+#-edge_event_kernel_reserve_sm 1
 #-edge_event_kernel_preempt_sm 2
 #-edge_use_all_sms_for_event_kernels 0
 #-edge_single_sm_for_isr 1
 
--gpgpu_max_concurrent_kernel 1025
--edge_run_small_event_as_fastpath 1
+-gpgpu_max_concurrent_kernel 33
+-edge_run_small_event_as_fastpath 0
 
 -trace_enabled 0
--edge_max_timer_events 1024
+-edge_max_timer_events 32
 
 #-visualizer_enabled 1
 #-enable_ptx_file_line_stats 1
@@ -221,9 +221,10 @@
 -edge_enable_register_renaming_instead_backup 1
 #-edge_event_start_cycle 1000
 
--edge_max_timer_events 10000
+-edge_stop_other_warps_in_preempted_sm 1
+
+-edge_max_timer_events 4096
 -gpgpu_max_concurrent_kernel 65
 -edge_event_priority 1
--edge_limit_concurrent_events 1
--edge_dont_launch_event_kernel 1
+-edge_limit_concurrent_events 16
 -edge_gen_requests_pattern_by_delay_and_limit 0

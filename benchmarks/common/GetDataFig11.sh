@@ -1,6 +1,5 @@
 #!/bin/bash
 
-echo "WAIT"
 for event in ipv4_fwd ipv6_fwd memc_conv des_encryption	
 do
 	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
@@ -28,29 +27,3 @@ do
  	done
 done
 
-echo "INSTANT"
-for event in ipv4_fwd ipv6_fwd memc_conv des_encryption	
-do
-	cd ${LOCAL_GEM5_PATH}/benchmarks/edge/$event/
- 	for type in draining preemption
- 	do
- 		for bg_task in "$1"
- 		do
-			for prio in 1
- 			do	
-                		for f in prio_1_all_opt_"$type"_bg_task_"$bg_task"_no_overlap_*rate.log
-                		do
-                    			if [ "$event" == "memc_conv" ]
-                    			then
-					    ../../common/ExtractEventInstantPreempt.sh "$f" "GetKernel"			
-                    			elif [ "$event" == "des_encryption" ]
-                    			then
-                    			    ../../common/ExtractEventInstantPreempt.sh "$f" "des_encrypt"
-                    			else
-					    ../../common/ExtractEventInstantPreempt.sh "$f" "$event"			
-                    			fi
-                		done
- 			done
- 		done
- 	done
-done
