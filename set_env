@@ -3,7 +3,7 @@ export LOCAL_GEM5_PATH=~/event_driven_gpu_execution/
 export ZLIB_PATH=/home/tayler/zlib/
 
 ##### CUDA 3.1 used for gem5-gpu
-CUDA_V=3.1
+CUDA_V=3.2
 
 export PATH=/home/maria/cuda-$CUDA_V/cuda/bin/:$PATH
 export LD_LIBRARY_PATH=/home/maria/cuda-$CUDA_V/cuda/lib64/:/home/maria/cuda-$CUDA_V/cuda/lib/:$LD_LIBRARY_PATH
