@@ -8,6 +8,6 @@ do
   	rm -f results_temp.log;
   	line=$(grep -n "L2 cache stats" ${file} | tail -1 | cut -d: -f1);
   	tail -n +$line ${file} > tranc_file;
-  	grep "Kernel_name = _Z26matrixMultiplicationKernelPfS_S_i" -A8 tranc_file | grep event_kernel_cycles_since_interrupt | grep -o '[[:digit:]]\+' >> results_temp.log
+  	grep "Kernel_name = _Z15des_encrypt_devPmS_PhS0_iiPib" -A8 tranc_file | grep event_kernel_cycles_since_interrupt | grep -o '[[:digit:]]\+' >> results_temp.log
 done
 ./calc.py
