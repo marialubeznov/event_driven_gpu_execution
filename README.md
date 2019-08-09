@@ -1,5 +1,5 @@
 # event_driven_gpu_execution (PACT 2019)
-see EDGE_README.pdf for instructions
+see [EDGE_README.pdf](EDGE_README.pdf) for instructions
 
 see [this spreadsheet](https://docs.google.com/spreadsheets/d/1aepQmbfFa8CRGu6r94NgAOjffpjVqKxYsLon2WmUzC8/edit?usp=sharing) for calculation of slowdown and ANTT from the data extracted by the scripts.
 
