@@ -19,6 +19,7 @@
  			cd ${LOCAL_GEM5_PATH}/benchmarks/edge/ipv6_fwd
  			#run test
 			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task",CONFIG_PATH="$config_path" run_ipv6_high_util.pbs
+            sleep 5
  		done
  	done
  done

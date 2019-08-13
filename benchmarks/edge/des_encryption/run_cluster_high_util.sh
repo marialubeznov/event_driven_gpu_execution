@@ -19,6 +19,7 @@
  			cd ${LOCAL_GEM5_PATH}/benchmarks/edge/des_encryption
  			#run test
 			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task",CONFIG_PATH="$config_path" run_ipsec_high_util.pbs
+            sleep 5
  		done
  	done
  done
