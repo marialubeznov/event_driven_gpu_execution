@@ -22,7 +22,7 @@
 			do
  				rate=`shuf -i 2000-5000 -n 1`
 				qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task",RATE="$rate",CONFIG_PATH="$config_path" run_memc_no_overlap.pbs
-
+                sleep 5
 			done
  		done
  	done
