@@ -13,13 +13,12 @@
  			echo "-gpgpu_max_concurrent_kernel 65" >> gpgpusim.fermi.config.template
  			echo "-edge_event_priority $prio" >> gpgpusim.fermi.config.template
  			echo "-edge_limit_concurrent_events 2" >> gpgpusim.fermi.config.template
- 			echo "-edge_gen_requests_pattern_by_delay_and_limit 0" >> gpgpusim.fermi.config.template 			
+ 			echo "-edge_gen_requests_pattern_by_delay_and_limit 0" >> gpgpusim.fermi.config.template 	
+			export config_path="config_low_util_prio_"$prio"_type_"$type"_bg_"$bg_task""
+            		cp gpgpusim.fermi.config.template ${LOCAL_GEM5_PATH}/benchmarks/edge/memc_conv/"$config_path"		
  			cd ${LOCAL_GEM5_PATH}/benchmarks/edge/memc_conv
  			#run test
-			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task" run_memc_low_util.pbs
-			sleep 5
- 			#move to results dir
- 			#mv prio_"$prio"_all_opt_"$type"_bg_task_"$bg_task".log results_1G_Apr04
+			qsub -v PRIO="$prio",TYPE="$type",BG_TASK="$bg_task",CONFIG_PATH="$config_path" run_memc_low_util.pbs
  		done
  	done
  done

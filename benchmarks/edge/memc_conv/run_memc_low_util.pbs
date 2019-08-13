@@ -7,5 +7,5 @@
 #PBS -q batch
 #PBS -V
 
-../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py -c ${LOCAL_GEM5_PATH}/benchmarks/edge/memc_conv/gem5_fusion_memc_conv -o "-t 5 -p 12000 -n 64 -g ${BG_TASK}" 
+../../../gem5/build/X86_VI_hammer_GPU/gem5.opt ../../../gem5-gpu/configs/se_fusion.py --gpgpusim-config=${CONFIG_PATH} -c ${LOCAL_GEM5_PATH}/benchmarks/edge/memc_conv/gem5_fusion_memc_conv -o "-t 5 -p 12000 -n 64 -g ${BG_TASK}" 
 
