@@ -100,7 +100,7 @@ def parseGpgpusimConfig(options):
     # Use the template found in gem5-fusion/configs/gpu_config and fill in
     # the missing information with command line options.
     if options.gpgpusim_config:
-        usingTemplate = False
+        usingTemplate = True #MARIA CHANGE Aug 09
         gpgpusimconfig = options.gpgpusim_config
     else:
         if options.gpu_core_config == 'Fermi':
