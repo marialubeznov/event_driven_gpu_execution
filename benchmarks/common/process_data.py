@@ -10,6 +10,8 @@ file = sys.argv[1]
 bg_task = int(sys.argv[2])
 
 data = pd.read_csv(file,header=None)
+
+#Isolation runtime of BG tasks and the event kernels
 bg_task_lat = [917947,917947,698933,917947]
 event_lat = [2300 ,2300 ,22936,24171]
 seq=["\"D\"", "\"R\"" ,"\"P\""]
