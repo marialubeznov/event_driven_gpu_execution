@@ -1,52 +1,98 @@
-# file containing output of GetDataFig12.sh for low_util
+# List of files containing output of GetDataFig11.sh
 # Make sure that the output contains results for all tasks- technique combination
-file_list=("0_low_util" "1_low_util" "2_low_util" "3_low_util")
-bg_task_list=("CONV" "MM" "BP" "BFS")
+file_list=("0_no_overlap" "1_no_overlap" "2_no_overlap" "3_no_overlap")
+#order of BG task should match the order of the file list
+bg_task=("CONV" "MM" "BP" "BFS")
 
+
+echo "	draining			preemption		"
+echo "#	AVG	MIN	MAX	AVG	MIN	MAX"
+rm -rf t3
+rm -rf t4
 for i in {0..3}
 do
 	file=${file_list[$i]}
-	# The Background task ID {0,1,2,3} 
-	bg_task=$i
-	name=${bg_task_list[$i]}
-	touch sd_$file
-	less $file | grep BACKGROUND -B 1000 > event_$file
-	less $file | grep BACKGROUND -A 1000 > BG_$file
-	less event_$file | cut -d " " -f 3 | grep -v avg | tr -s "\n" | grep -v EVENT > t2
-	less BG_$file | cut -d " " -f 1 | grep -v ipv | grep -v memc | grep -v des_ | grep -v BACKGROUND | grep -v min > t1
-	less event_$file | cut -d " " -f 4 | grep -v p95 |  tr -s "\n" | grep -v EVENT > t3
-	less event_$file | cut -d " " -f 5 |  tr -s "\n" | grep -v EVENT > t4
-	paste -d , t1 t2 t3 t4 > sd_$file
-	python ../process_data.py sd_$file $bg_task > ${name}_low_util.dat
-	rm -rf event_$file
-	rm -rf BG_$file
+
+	bg_task=${bg_task[$i]}
+	touch drain_$file
+	touch preempt_$file
+
+
+	less $file |  grep  ipv4_fwd -A 3 | grep drain -A 3 | grep -v drain  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "ipv4_fwd,draining,$av,$min,$max" > drain_$file
+
+	less $file |  grep  ipv4_fwd -A 3 | grep preempt -A 3 | grep -v preempt  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "ipv4_fwd,preemption,$av,$min,$max" > preempt_$file
+
+	less $file |  grep  ipv6_fwd -A 3 | grep drain -A 3 | grep -v drain  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "ipv6_fwd,draining,$av,$min,$max" >> drain_$file
+
+	less $file |  grep  ipv6_fwd -A 3 | grep preempt -A 3 | grep -v preempt  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "ipv6_fwd,preemption,$av,$min,$max" >> preempt_$file
+
+	less $file |  grep  memc -A 3 | grep drain -A 3 | grep -v drain  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "memc,draining,$av,$min,$max" >> drain_$file
+
+	less $file |  grep  memc -A 3 | grep preempt -A 3 | grep -v preempt  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "memc,preemption,$av,$min,$max" >> preempt_$file
+
+	less $file |  grep  des_enc -A 3 | grep drain -A 3 | grep -v drain  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "des_encryption,draining,$av,$min,$max" >> drain_$file
+
+	less $file |  grep  des_enc -A 3 | grep preempt -A 3 | grep -v preempt  > t2
+	av=`awk -F " " 'BEGIN{sum=0}{sum=sum+$1}END{print sum/3}' t2`
+	min=`awk -F " " 'BEGIN{sum=0}{sum=sum+$2}END{print sum/3}' t2`
+	max=`awk -F " " 'BEGIN{sum=0}{sum=sum+$3}END{print sum/3}' t2`
+	echo "des_encryption,preemption,$av,$min,$max" >> preempt_$file
+
+	av=`awk -F "," 'BEGIN{sum=0}{sum=sum+$3}END{print sum/4}' drain_$file`
+	min=`awk -F "," 'BEGIN{sum=0}{sum=sum+$4}END{print sum/4}' drain_$file`
+	max=`awk -F "," 'BEGIN{sum=0}{sum=sum+$5}END{print sum/4}' drain_$file`
+	echo "$av,$min,$max" >> t3
+
+	av1=`awk -F "," 'BEGIN{sum=0}{sum=sum+$3}END{print sum/4}' preempt_$file`
+	min1=`awk -F "," 'BEGIN{sum=0}{sum=sum+$4}END{print sum/4}' preempt_$file`
+	max1=`awk -F "," 'BEGIN{sum=0}{sum=sum+$5}END{print sum/4}' preempt_$file`
+	
+
+	echo "\"$bg_task\" $av $min $max $av1 $min1 $max1"
+
+	echo "$av1,$min1,$max1" >> t4
 done
-python ../average_data.py relative_sd_0_low_util relative_sd_1_low_util relative_sd_2_low_util relative_sd_3_low_util > avg_low_util.dat
 
-# file containing output of GetDataFig12.sh
-# Make sure that the output contains results for all tasks- technique combination
-file_list=("0_high_util" "1_high_util" "2_high_util" "3_high_util")
-bg_task_list=("CONV" "MM" "BP" "BFS")
+# draining average
+av=`awk -F "," 'BEGIN{sum=0}{sum=sum+$1}END{print sum/4}' t3`
+min=`awk -F "," 'BEGIN{sum=0}{sum=sum+$2}END{print sum/4}' t3`
+max=`awk -F "," 'BEGIN{sum=0}{sum=sum+$3}END{print sum/4}' t3`
 
-for i in {0..3}
-do
-	file=${file_list[$i]}
-	# The Background task ID {0,1,2,3} 
-	bg_task=$i
-	touch sd_$file
-	less $file | grep BACKGROUND -B 1000 > event_$file
-	less $file | grep BACKGROUND -A 1000 > BG_$file
-	less event_$file | cut -d " " -f 3 | grep -v avg | tr -s "\n" | grep -v EVENT > t2
-	less BG_$file | cut -d " " -f 1 | grep -v ipv | grep -v memc | grep -v des_ | grep -v BACKGROUND | grep -v min > t1
-	less event_$file | cut -d " " -f 4 | grep -v p95 |  tr -s "\n" | grep -v EVENT > t3
-	less event_$file | cut -d " " -f 5 |  tr -s "\n" | grep -v EVENT > t4
-	paste -d , t1 t2 t3 t4 > sd_$file
-	python ../process_data.py sd_$file $bg_task > ${name}_high_util.dat
-	rm -rf event_$file
-	rm -rf BG_$file
-done
-python ../average_data.py relative_sd_0_high_util relative_sd_1_high_util relative_sd_2_high_util relative_sd_3_high_util > avg_high_util.dat
+# preemption average
+av1=`awk -F "," 'BEGIN{sum=0}{sum=sum+$1}END{print sum/4}' t4`
+min1=`awk -F "," 'BEGIN{sum=0}{sum=sum+$2}END{print sum/4}' t4`
+max1=`awk -F "," 'BEGIN{sum=0}{sum=sum+$3}END{print sum/4}' t4`
 
-rm -rf relative_sd_*_util
-rm -rf sd_*_util
-rm -rf t1 t2 t3 t4 
+echo "\"AVERAGE\" $av $min $max $av1 $min1 $max1$"
+
+rm -rf t1 t2 t3 t4
+rm -rf preempt_*_no_overlap
+rm -rf drain_*_no_overlap
